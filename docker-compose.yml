@@ -1,51 +1,11 @@
 # ─────────────────────────────────────────────────────────────────
-# docker-compose.yml  —  Local & AWS t3.micro Deployment
-#
-# Services:
-#   ollama    — Local LLM server (llama3.2 + nomic-embed-text)
-#   backend   — Flask API + LangGraph pipeline
-#   frontend  — React app served via nginx (proxies /api → backend)
+# docker-compose.yml — Lightweight AWS Deployment (Groq Cloud / OpenAI / Ollama)
 # ─────────────────────────────────────────────────────────────────
 version: '3.9'
 
 services:
 
-  # ── Ollama (local LLM server) ────────────────────────────────
-  ollama:
-    image: ollama/ollama:latest
-    container_name: ytnm-ollama
-    volumes:
-      - ollama_data:/root/.ollama        # persist downloaded models
-    ports:
-      - "11434:11434"
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-      start_period: 20s
-
-  # ── Model Initialiser (pulls models into Ollama) ─────────────
-  ollama-init:
-    image: ollama/ollama:latest
-    container_name: ytnm-ollama-init
-    depends_on:
-      ollama:
-        condition: service_healthy
-    environment:
-      - OLLAMA_HOST=http://ollama:11434
-    entrypoint: >
-      sh -c "
-        echo 'Pulling llama3.2...' &&
-        ollama pull llama3.2 &&
-        echo 'Pulling nomic-embed-text...' &&
-        ollama pull nomic-embed-text &&
-        echo 'All models ready!'
-      "
-    restart: "no"
-
-  # ── Backend (Flask API) ──────────────────────────────────────
+  # ── Backend (Flask API + LangGraph) ───────────────────────────
   backend:
     build:
       context: ./backend
@@ -54,15 +14,12 @@ services:
     env_file:
       - .env
     environment:
-      - OLLAMA_BASE_URL=http://ollama:11434
+      - OLLAMA_BASE_URL=http://localhost:11434
       - FLASK_ENV=production
-    depends_on:
-      ollama:
-        condition: service_healthy
     ports:
       - "5000:5000"
     volumes:
-      - pdf_output:/app/output          # persist generated PDFs
+      - pdf_output:/app/output
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/api/health')"]
@@ -85,5 +42,4 @@ services:
     restart: unless-stopped
 
 volumes:
-  ollama_data:
   pdf_output:
