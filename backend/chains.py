@@ -9,8 +9,10 @@ Graph flow:
 """
 
 import json
+import os
 import re
 import html
+import time
 import xml.etree.ElementTree as ET
 from typing import TypedDict, Optional
 import requests
@@ -194,9 +196,14 @@ def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
     return None
 
 
-# ── Strategy 3: yt-dlp with client spoofing ──────────────────────────────────────
+# ── Strategy 3: yt-dlp with cookies.txt + client spoofing + retry ─────────────────
 def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
     url = f"https://www.youtube.com/watch?v={video_id}"
+
+    # Use cookies.txt if available (exported from browser via extension)
+    cookies_path = "/app/cookies.txt"
+    use_cookies = os.path.isfile(cookies_path) and os.path.getsize(cookies_path) > 10
+
     ydl_opts = {
         "skip_download": True,
         "writesubtitles": True,
@@ -204,42 +211,54 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
         "subtitleslangs": ["en", "en-US", "hi"],
         "quiet": True,
         "no_warnings": True,
-        "extractor_args": {"youtube": {"player_client": ["ios"]}},
+        "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
+        "socket_timeout": 15,
     }
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
-            if not all_subs:
-                return None
-            chosen_lang = next((l for l in ["en", "en-US", "hi"] if l in all_subs), list(all_subs.keys())[0])
-            formats = all_subs[chosen_lang]
-            sub_url = next((f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1"]), None)
-            if not sub_url and formats:
-                sub_url = formats[0].get("url")
-            if not sub_url:
-                return None
-            resp = requests.get(sub_url, headers={"User-Agent": "com.google.ios.youtube/19.29.1"}, timeout=10)
-            content = resp.text
-            snippets = []
-            try:
-                jdata = json.loads(content)
-                for ev in jdata.get("events", []):
-                    for s in ev.get("segs", []):
-                        t = _clean_text(s.get("utf8", ""))
-                        if t:
-                            snippets.append(t)
-            except Exception:
-                for line in content.splitlines():
-                    c = _clean_text(line)
-                    if c and not c.isdigit() and "-->" not in c and not c.startswith("WEBVTT"):
-                        snippets.append(c)
-            text = " ".join(snippets).strip()
-            if text:
-                print(f"[Transcript] Strategy 3 (yt-dlp) SUCCESS: {len(text)} chars")
-                return text
-    except Exception as e:
-        print(f"[Transcript] Strategy 3 (yt-dlp) failed: {e}")
+    if use_cookies:
+        ydl_opts["cookiefile"] = cookies_path
+        print(f"[Transcript] Strategy 3 (yt-dlp): Using cookies.txt for auth")
+    else:
+        print(f"[Transcript] Strategy 3 (yt-dlp): No cookies.txt found, trying without auth")
+
+    # Retry up to 2 times with backoff
+    for attempt in range(1, 3):
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
+                if not all_subs:
+                    print(f"[Transcript] Strategy 3 (yt-dlp) attempt {attempt}: No subtitles found")
+                    break
+                chosen_lang = next((l for l in ["en", "en-US", "hi"] if l in all_subs), list(all_subs.keys())[0])
+                formats = all_subs[chosen_lang]
+                sub_url = next((f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1"]), None)
+                if not sub_url and formats:
+                    sub_url = formats[0].get("url")
+                if not sub_url:
+                    break
+                resp = requests.get(sub_url, headers={"User-Agent": "com.google.ios.youtube/19.29.1"}, timeout=10)
+                content = resp.text
+                snippets = []
+                try:
+                    jdata = json.loads(content)
+                    for ev in jdata.get("events", []):
+                        for s in ev.get("segs", []):
+                            t = _clean_text(s.get("utf8", ""))
+                            if t:
+                                snippets.append(t)
+                except Exception:
+                    for line in content.splitlines():
+                        c = _clean_text(line)
+                        if c and not c.isdigit() and "-->" not in c and not c.startswith("WEBVTT"):
+                            snippets.append(c)
+                text = " ".join(snippets).strip()
+                if text:
+                    print(f"[Transcript] Strategy 3 (yt-dlp) SUCCESS on attempt {attempt}: {len(text)} chars")
+                    return text
+        except Exception as e:
+            print(f"[Transcript] Strategy 3 (yt-dlp) attempt {attempt} failed: {e}")
+            if attempt < 2:
+                time.sleep(2)
     return None
 
 

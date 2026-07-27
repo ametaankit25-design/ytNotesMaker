@@ -31,3 +31,6 @@ output/
 .DS_Store
 Thumbs.db
 .gradio/
+
+# YouTube cookies (never commit — contains private session data)
+cookies.txt

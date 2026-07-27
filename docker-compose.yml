@@ -18,6 +18,9 @@ services:
       - "5000:5000"
     volumes:
       - pdf_output:/app/output
+      # Mount cookies.txt for yt-dlp browser auth (export from Chrome/Firefox)
+      # If file doesn't exist yet, create an empty one: touch cookies.txt
+      - ./cookies.txt:/app/cookies.txt:ro
     networks:
       - ytnm-net
     extra_hosts:
