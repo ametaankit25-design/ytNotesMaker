@@ -44,7 +44,6 @@ class NotesState(TypedDict):
 
 def _extract_video_id(url: str) -> Optional[str]:
     """
-    Ultra-resilient video ID extractor.
     Extracts 11-character YouTube ID from ANY format:
       - https://www.youtube.com/watch?v=VIDEO_ID
       - https://www.youtube.com/watch?w=VIDEO_ID (typos)
@@ -54,8 +53,6 @@ def _extract_video_id(url: str) -> Optional[str]:
       - Raw 11-char ID (e.g. VIDEO_ID)
     """
     url = url.strip()
-
-    # Pattern for 11-character YouTube IDs
     patterns = [
         r'(?:v|w|vi)[=/]([a-zA-Z0-9_-]{11})',
         r'(?:youtu\.be/)([a-zA-Z0-9_-]{11})',
@@ -68,7 +65,6 @@ def _extract_video_id(url: str) -> Optional[str]:
         if m:
             return m.group(1)
 
-    # Generic search for any 11-char sequence if patterns miss
     fallback_m = re.search(r'([a-zA-Z0-9_-]{11})', url)
     if fallback_m:
         return fallback_m.group(1)
@@ -78,7 +74,7 @@ def _extract_video_id(url: str) -> Optional[str]:
 
 def _fetch_transcript_ytdlp(url: str) -> str:
     """
-    Uses yt-dlp with Android/iOS client spoofing.
+    Uses yt-dlp with Android/iOS client spoofing to extract exact video subtitles/captions.
     Bypasses AWS EC2 datacenter IP blocks.
     """
     ydl_opts = {
@@ -98,17 +94,23 @@ def _fetch_transcript_ytdlp(url: str) -> str:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         title = info.get('title', 'YouTube Video')
+        uploader = info.get('uploader', 'Speaker/Creator')
         description = info.get('description', '')
 
         subtitles = info.get('subtitles') or {}
         auto_subs = info.get('automatic_captions') or {}
-        all_subs = {**auto_subs, **subtitles}
+        all_subs = {**subtitles, **auto_subs}
 
         if not all_subs:
-            # Fallback if no captions exist: return rich metadata so LLM can still generate notes!
-            return f"[Video Title: {title}]\n[Description: {description[:1000]}]\n(Note: Captions disabled for this video, generated based on title & topic context)."
+            # Metadata fallback if captions are completely disabled by uploader
+            return (
+                f"VIDEO TITLE: {title}\n"
+                f"SPEAKER / CHANNEL: {uploader}\n"
+                f"DESCRIPTION / OVERVIEW:\n{description[:1500]}\n"
+                f"(Note: Captions disabled for this video. Generate notes strictly for the subject matter described above)."
+            )
 
-        # Find best language track
+        # Priority language selection
         chosen_lang = None
         for lang in ['en', 'en-US', 'en-GB', 'hi', 'hi-IN']:
             if lang in all_subs:
@@ -127,7 +129,7 @@ def _fetch_transcript_ytdlp(url: str) -> str:
             sub_url = formats[0].get('url')
 
         if not sub_url:
-            return f"[Video Title: {title}]\n[Description: {description[:1000]}]"
+            return f"VIDEO TITLE: {title}\nDESCRIPTION:\n{description[:1500]}"
 
         headers = {
             "User-Agent": (
@@ -158,16 +160,20 @@ def _fetch_transcript_ytdlp(url: str) -> str:
 
         full_text = " ".join(text_snippets)
         if not full_text.strip():
-            return f"[Video Title: {title}]\n[Description: {description[:1000]}]"
+            return f"VIDEO TITLE: {title}\nDESCRIPTION:\n{description[:1500]}"
 
-        return f"[Video Title: {title}]\n[Transcript language: {chosen_lang}]\n" + full_text
+        return (
+            f"VIDEO TITLE: {title}\n"
+            f"SPEAKER / CHANNEL: {uploader}\n"
+            f"TRANSCRIPT LANGUAGE: {chosen_lang}\n\n"
+            f"FULL VERBATIM TRANSCRIPT:\n{full_text}"
+        )
 
 
 @tool
 def fetch_transcript_tool(url: str) -> str:
     """
-    LangChain tool: fetches transcript for a YouTube video URL.
-    Resilient to URL typos, formats, and missing captions.
+    LangChain tool: fetches exact video transcript and title for a YouTube URL.
     """
     video_id = _extract_video_id(url)
     if not video_id:
@@ -178,9 +184,8 @@ def fetch_transcript_tool(url: str) -> str:
     try:
         return _fetch_transcript_ytdlp(normalized_url)
     except Exception as e1:
-        print(f"[Transcript Warning] {e1}. Trying fallback...")
+        print(f"[Transcript Warning] yt-dlp failed ({e1}). Trying YouTubeTranscriptApi...")
 
-    # Secondary fallback to YouTubeTranscriptApi
     try:
         api = YouTubeTranscriptApi()
         transcript_list = api.list(video_id)
@@ -188,39 +193,34 @@ def fetch_transcript_tool(url: str) -> str:
         if chosen:
             fetched = chosen.fetch()
             text = " ".join(entry.text for entry in fetched)
-            return f"[Transcript language: {chosen.language_code}]\n" + text
+            return f"VIDEO ID: {video_id}\nTRANSCRIPT LANGUAGE: {chosen.language_code}\n\nFULL VERBATIM TRANSCRIPT:\n{text}"
     except Exception:
         pass
 
-    return f"[Video ID: {video_id}]\nPlease generate notes for the subject matter of this YouTube video."
+    return f"VIDEO ID: {video_id}\nPlease generate comprehensive structured study notes based on this video."
 
 
 # ──────────────────────────────────────────────
-# 3.  LCEL Notes Chain
+# 3.  LCEL Notes Chain (STRICT VIDEO-BASED NOTES)
 # ──────────────────────────────────────────────
 
 _NOTES_TEMPLATE = """\
-You are an expert educator who creates concise, high-quality study notes.
-Given the transcript or topic of a YouTube video, produce structured notes by combining
-two sources of knowledge:
+You are an expert master educator who creates detailed, high-accuracy study notes.
+Your task is to generate comprehensive structured study notes STRICTLY based on the provided YouTube video transcript and title below.
 
-  1. PRIMARY SOURCE — the video transcript/metadata provided below.
-  2. YOUR OWN KNOWLEDGE BASE — use your training knowledge to:
-       - Add clear definitions for any terms or concepts mentioned.
-       - Provide relevant background context the video may have skipped.
-       - Include real-world examples or analogies to strengthen understanding.
-       - Fill in gaps where the transcript is brief or unclear.
-       - Add extra depth to bullet points beyond what was literally said.
+PRIMARY SOURCE OF TRUTH:
+The YouTube Video Transcript & Title provided under 'INPUT VIDEO CONTENT'.
 
-Rules:
-- ALWAYS write all output fields in ENGLISH, regardless of the input language.
-- The video topic is the anchor — produce structured notes covering the main subject.
-- Bullet points should be self-contained, information-dense, and enriched with
-  context from your knowledge.
-- Flashcard questions should test deep understanding, not just surface recall.
-- Key concepts should include a brief definition.
+RULES FOR NOTE GENERATION:
+1. TITLE: Set the 'title' field to match the exact topic or main title of the video.
+2. STRICT VIDEO FIDELITY: Your summary, key concepts, bullet points, and flashcards MUST accurately capture the specific ideas, explanations, steps, code, facts, and examples presented by the speaker in this video.
+3. ENRICHMENT WITHOUT HALLUCINATION: You may use your background knowledge to clarify technical terms or add definitions, but the core content MUST remain 100% focused on what is covered in the video. Do NOT write generic unrelated textbook fluff.
+4. SUMMARY: Provide a clear, comprehensive summary of the main arguments and explanations in the video.
+5. BULLET POINTS: Write detailed, actionable, self-contained bullet points covering every major section or step explained in the video.
+6. FLASHCARDS & KEY CONCEPTS: Extract the key terms defined or explained in the video and generate flashcards testing understanding of the video content.
+7. LANGUAGE: All output fields MUST be in clean, high-quality ENGLISH regardless of the video spoken language (Hindi, Hinglish, English, etc.).
 
-TRANSCRIPT / TOPIC:
+INPUT VIDEO CONTENT:
 {transcript}
 """
 
@@ -229,7 +229,7 @@ def build_notes_chain(llm=None, instructions: str = ""):
         llm = llm_model()
 
     extra = (
-        f"\nUser Instructions (follow these specifically): {instructions.strip()}\n"
+        f"\nSPECIAL USER INSTRUCTIONS (apply these focus areas to the video notes): {instructions.strip()}\n"
         if instructions and instructions.strip()
         else ""
     )
@@ -248,7 +248,7 @@ def build_notes_chain(llm=None, instructions: str = ""):
 # ──────────────────────────────────────────────
 
 def fetch_transcript_node(state: NotesState) -> NotesState:
-    """Node 1: fetch the transcript from YouTube."""
+    """Node 1: fetch exact video transcript from YouTube."""
     try:
         transcript = fetch_transcript_tool.invoke({"url": state["url"]})
         return {**state, "transcript": transcript, "error": None}
@@ -257,7 +257,7 @@ def fetch_transcript_node(state: NotesState) -> NotesState:
 
 
 def generate_notes_node(state: NotesState) -> NotesState:
-    """Node 2: run the LCEL chain to produce structured notes."""
+    """Node 2: run LCEL chain for strict video-based structured notes."""
     if state.get("error"):
         return state
 
@@ -270,7 +270,7 @@ def generate_notes_node(state: NotesState) -> NotesState:
 
 
 def generate_pdfs_node(state: NotesState) -> NotesState:
-    """Node 3: convert the NotesOutput into downloadable PDF files."""
+    """Node 3: convert NotesOutput into downloadable PDF files."""
     if state.get("error"):
         return state
 
