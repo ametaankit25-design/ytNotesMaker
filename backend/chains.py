@@ -180,19 +180,30 @@ def _fetch_via_innertube(video_id: str) -> tuple[Optional[str], str, str, str]:
     return transcript_text, title, uploader, description
 
 
-# ── Strategy 2: youtube-transcript-api (direct library, simpler) ─────────────────
+# ── Strategy 2: youtube-transcript-api v1.x (from Manual-tool-calling-agent notebook) ──
 def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
+    """
+    Uses the v1.x API pattern: YouTubeTranscriptApi().fetch(video_id, languages=[...])
+    Returns transcript text joined from .snippets (not the old .get_transcript dict format).
+    """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        data = YouTubeTranscriptApi.get_transcript(
-            video_id, languages=["en", "en-US", "en-GB", "hi", "hi-IN"]
-        )
-        text = " ".join(_clean_text(e["text"]) for e in data)
-        if text.strip():
-            print(f"[Transcript] Strategy 2 (TranscriptAPI) SUCCESS: {len(text)} chars")
-            return text
+        ytt_api = YouTubeTranscriptApi()
+
+        # Try multiple language codes
+        for langs in [["en"], ["en-US"], ["en-GB"], ["hi"], ["hi-IN"]]:
+            try:
+                transcript = ytt_api.fetch(video_id, languages=langs)
+                text = " ".join(_clean_text(snippet.text) for snippet in transcript.snippets)
+                if text.strip():
+                    print(f"[Transcript] Strategy 2 (TranscriptAPI v1.x) SUCCESS: {len(text)} chars, lang={langs[0]}")
+                    return text
+            except Exception:
+                continue
+
+        print(f"[Transcript] Strategy 2 (TranscriptAPI v1.x): No transcript found in any language")
     except Exception as e:
-        print(f"[Transcript] Strategy 2 (TranscriptAPI) failed: {e}")
+        print(f"[Transcript] Strategy 2 (TranscriptAPI v1.x) failed: {e}")
     return None
 
 
