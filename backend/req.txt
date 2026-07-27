@@ -8,7 +8,6 @@ langchain-google-genai
 langchain-openai
 langchain
 langgraph
-faiss-cpu
 fpdf2
 pydantic
 python-dotenv
