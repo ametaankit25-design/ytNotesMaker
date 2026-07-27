@@ -43,15 +43,6 @@ class NotesState(TypedDict):
 # ──────────────────────────────────────────────
 
 def _extract_video_id(url: str) -> Optional[str]:
-    """
-    Extracts 11-character YouTube ID from ANY format:
-      - https://www.youtube.com/watch?v=VIDEO_ID
-      - https://www.youtube.com/watch?w=VIDEO_ID (typos)
-      - https://youtu.be/VIDEO_ID
-      - https://www.youtube.com/shorts/VIDEO_ID
-      - https://www.youtube.com/embed/VIDEO_ID
-      - Raw 11-char ID (e.g. VIDEO_ID)
-    """
     url = url.strip()
     patterns = [
         r'(?:v|w|vi)[=/]([a-zA-Z0-9_-]{11})',
@@ -74,8 +65,7 @@ def _extract_video_id(url: str) -> Optional[str]:
 
 def _fetch_transcript_ytdlp(url: str) -> str:
     """
-    Uses yt-dlp with Android/iOS client spoofing to extract exact video subtitles/captions.
-    Bypasses AWS EC2 datacenter IP blocks.
+    Extracts video title and exact spoken transcript using yt-dlp.
     """
     ydl_opts = {
         'skip_download': True,
@@ -94,7 +84,7 @@ def _fetch_transcript_ytdlp(url: str) -> str:
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
         title = info.get('title', 'YouTube Video')
-        uploader = info.get('uploader', 'Speaker/Creator')
+        uploader = info.get('uploader', 'Speaker')
         description = info.get('description', '')
 
         subtitles = info.get('subtitles') or {}
@@ -102,15 +92,13 @@ def _fetch_transcript_ytdlp(url: str) -> str:
         all_subs = {**subtitles, **auto_subs}
 
         if not all_subs:
-            # Metadata fallback if captions are completely disabled by uploader
+            print(f"[Transcript] No subtitles found for {url}. Using video description fallback.")
             return (
                 f"VIDEO TITLE: {title}\n"
                 f"SPEAKER / CHANNEL: {uploader}\n"
-                f"DESCRIPTION / OVERVIEW:\n{description[:1500]}\n"
-                f"(Note: Captions disabled for this video. Generate notes strictly for the subject matter described above)."
+                f"VIDEO DESCRIPTION:\n{description[:2000]}\n"
             )
 
-        # Priority language selection
         chosen_lang = None
         for lang in ['en', 'en-US', 'en-GB', 'hi', 'hi-IN']:
             if lang in all_subs:
@@ -129,7 +117,7 @@ def _fetch_transcript_ytdlp(url: str) -> str:
             sub_url = formats[0].get('url')
 
         if not sub_url:
-            return f"VIDEO TITLE: {title}\nDESCRIPTION:\n{description[:1500]}"
+            return f"VIDEO TITLE: {title}\nDESCRIPTION:\n{description[:2000]}"
 
         headers = {
             "User-Agent": (
@@ -141,40 +129,44 @@ def _fetch_transcript_ytdlp(url: str) -> str:
 
         text_snippets = []
         if 'json3' in sub_url or content.strip().startswith('{'):
-            data = json.loads(content)
-            for ev in data.get('events', []):
-                for s in ev.get('segs', []):
-                    t = s.get('utf8', '').strip()
-                    if t and t != '\n':
-                        text_snippets.append(t)
-        elif '<transcript>' in content or '<tt' in content:
-            root = ET.fromstring(content)
-            for elem in root.iter():
-                if elem.text and elem.text.strip():
-                    text_snippets.append(elem.text.strip())
-        else:
+            try:
+                data = json.loads(content)
+                for ev in data.get('events', []):
+                    for s in ev.get('segs', []):
+                        t = s.get('utf8', '').strip()
+                        if t and t != '\n':
+                            text_snippets.append(t)
+            except Exception:
+                pass
+
+        if not text_snippets:
+            # Fallback text parsing for XML/VTT/SRV1 formats
             lines = content.splitlines()
             for line in lines:
-                if '-->' not in line and not line.isdigit() and line.strip() and not line.startswith('WEBVTT'):
-                    text_snippets.append(line.strip())
+                cleaned_line = re.sub(r'<[^>]+>', '', line).strip()
+                if (
+                    cleaned_line
+                    and not cleaned_line.isdigit()
+                    and '-->' not in cleaned_line
+                    and not cleaned_line.startswith('WEBVTT')
+                ):
+                    text_snippets.append(cleaned_line)
 
         full_text = " ".join(text_snippets)
+        print(f"[Transcript Success] Fetched {len(full_text)} characters of transcript for '{title}'")
+
         if not full_text.strip():
-            return f"VIDEO TITLE: {title}\nDESCRIPTION:\n{description[:1500]}"
+            return f"VIDEO TITLE: {title}\nDESCRIPTION:\n{description[:2000]}"
 
         return (
             f"VIDEO TITLE: {title}\n"
             f"SPEAKER / CHANNEL: {uploader}\n"
-            f"TRANSCRIPT LANGUAGE: {chosen_lang}\n\n"
-            f"FULL VERBATIM TRANSCRIPT:\n{full_text}"
+            f"TRANSCRIPT:\n{full_text}"
         )
 
 
 @tool
 def fetch_transcript_tool(url: str) -> str:
-    """
-    LangChain tool: fetches exact video transcript and title for a YouTube URL.
-    """
     video_id = _extract_video_id(url)
     if not video_id:
         raise ValueError(f"Invalid YouTube URL or Video ID: {url}")
@@ -187,17 +179,14 @@ def fetch_transcript_tool(url: str) -> str:
         print(f"[Transcript Warning] yt-dlp failed ({e1}). Trying YouTubeTranscriptApi...")
 
     try:
-        api = YouTubeTranscriptApi()
-        transcript_list = api.list(video_id)
-        chosen = transcript_list.find_transcript(['en', 'hi']) or transcript_list.find_generated_transcript(['en', 'hi'])
-        if chosen:
-            fetched = chosen.fetch()
-            text = " ".join(entry.text for entry in fetched)
-            return f"VIDEO ID: {video_id}\nTRANSCRIPT LANGUAGE: {chosen.language_code}\n\nFULL VERBATIM TRANSCRIPT:\n{text}"
-    except Exception:
-        pass
+        data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US', 'hi'])
+        text = " ".join(entry['text'] for entry in data)
+        print(f"[Transcript API Success] Fetched {len(text)} characters for Video ID {video_id}")
+        return f"VIDEO ID: {video_id}\nTRANSCRIPT:\n{text}"
+    except Exception as e2:
+        print(f"[Transcript API Error] {e2}")
 
-    return f"VIDEO ID: {video_id}\nPlease generate comprehensive structured study notes based on this video."
+    return f"VIDEO ID: {video_id}\nPlease generate structured notes based on this video subject matter."
 
 
 # ──────────────────────────────────────────────
@@ -248,7 +237,6 @@ def build_notes_chain(llm=None, instructions: str = ""):
 # ──────────────────────────────────────────────
 
 def fetch_transcript_node(state: NotesState) -> NotesState:
-    """Node 1: fetch exact video transcript from YouTube."""
     try:
         transcript = fetch_transcript_tool.invoke({"url": state["url"]})
         return {**state, "transcript": transcript, "error": None}
@@ -257,7 +245,6 @@ def fetch_transcript_node(state: NotesState) -> NotesState:
 
 
 def generate_notes_node(state: NotesState) -> NotesState:
-    """Node 2: run LCEL chain for strict video-based structured notes."""
     if state.get("error"):
         return state
 
@@ -270,7 +257,6 @@ def generate_notes_node(state: NotesState) -> NotesState:
 
 
 def generate_pdfs_node(state: NotesState) -> NotesState:
-    """Node 3: convert NotesOutput into downloadable PDF files."""
     if state.get("error"):
         return state
 
