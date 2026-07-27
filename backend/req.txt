@@ -3,6 +3,7 @@ yt-dlp
 langchain-core
 langchain-community
 langchain-text-splitters
+langchain-ollama
 langchain-groq
 langchain-google-genai
 langchain-openai
