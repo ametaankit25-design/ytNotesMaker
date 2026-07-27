@@ -84,44 +84,42 @@ def _fetch_via_pytubefix(video_id: str) -> tuple[Optional[str], str, str, str]:
     title = uploader = description = ""
     url = f"https://www.youtube.com/watch?v={video_id}"
 
-    try:
-        from pytubefix import YouTube
-        yt = YouTube(url, client='WEB')
-        title = yt.title or ""
-        uploader = yt.author or ""
-        description = yt.description or ""
+    for client_type in ['WEB', 'IOS', 'MWEB', 'ANDROID']:
+        try:
+            from pytubefix import YouTube
+            yt = YouTube(url, client=client_type)
+            title = yt.title or ""
+            uploader = yt.author or ""
+            description = yt.description or ""
 
-        captions = yt.captions
-        if not captions:
-            print(f"[Transcript] Strategy 1 (pytubefix): No captions available for {video_id}")
-            return None, title, uploader, description
+            captions = yt.captions
+            if not captions:
+                print(f"[Transcript] Strategy 1 (pytubefix/{client_type}): No captions available for {video_id}")
+                continue
 
-        # Try to find English, Hindi, or first available caption track
-        chosen_caption = None
-        for lang_code in ['en', 'en-US', 'en-GB', 'hi', 'hi-IN']:
-            if lang_code in captions:
-                chosen_caption = captions[lang_code]
-                break
-        if not chosen_caption:
-            chosen_caption = list(captions.values())[0]
+            chosen_caption = None
+            for lang_code in ['en', 'en-US', 'en-GB', 'hi', 'hi-IN']:
+                if lang_code in captions:
+                    chosen_caption = captions[lang_code]
+                    break
+            if not chosen_caption:
+                chosen_caption = list(captions.values())[0]
 
-        # Extract text from caption
-        raw_srt = chosen_caption.generate_srt_captions()
-        # Parse text lines out of SRT
-        lines = []
-        for line in raw_srt.splitlines():
-            cleaned = _clean_text(line)
-            if cleaned and not cleaned.isdigit() and '-->' not in cleaned:
-                lines.append(cleaned)
+            raw_srt = chosen_caption.generate_srt_captions()
+            lines = []
+            for line in raw_srt.splitlines():
+                cleaned = _clean_text(line)
+                if cleaned and not cleaned.isdigit() and '-->' not in cleaned:
+                    lines.append(cleaned)
 
-        transcript_text = " ".join(lines).strip() or None
+            transcript_text = " ".join(lines).strip() or None
 
-        if transcript_text:
-            print(f"[Transcript] Strategy 1 (pytubefix) SUCCESS: {len(transcript_text)} chars, title='{title}'")
-            return transcript_text, title, uploader, description
+            if transcript_text:
+                print(f"[Transcript] Strategy 1 (pytubefix/{client_type}) SUCCESS: {len(transcript_text)} chars, title='{title}'")
+                return transcript_text, title, uploader, description
 
-    except Exception as e:
-        print(f"[Transcript] Strategy 1 (pytubefix) failed: {e}")
+        except Exception as e:
+            print(f"[Transcript] Strategy 1 (pytubefix/{client_type}) failed: {e}")
 
     return None, title, uploader, description
 
