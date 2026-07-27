@@ -74,110 +74,56 @@ def _clean_text(text: str) -> str:
 # 3.  Transcript Strategies
 # ──────────────────────────────────────────────
 
-# ── Strategy 1: YouTube Innertube iOS API (bypasses bot detection on EC2) ─────────
-def _fetch_via_innertube(video_id: str) -> tuple[Optional[str], str, str, str]:
+# ── Strategy 1: pytubefix (Modern active engine with auto bot-bypass) ───────────────
+def _fetch_via_pytubefix(video_id: str) -> tuple[Optional[str], str, str, str]:
     """
-    Calls YouTube's internal Innertube API using iOS client credentials.
-    This mimics the official YouTube iOS app traffic — NOT blocked by AWS IP.
+    Uses pytubefix library — active pytube fork with built-in PO Token generator
+    and client rotation (WEB/IOS/ANDROID) to bypass bot detection automatically.
     Returns (transcript_text, title, uploader, description).
     """
-    # Official YouTube iOS app API key (public, embedded in the app binary)
-    INNERTUBE_API_KEY = "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc"
-    IOS_UA = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)"
-
-    headers = {
-        "Content-Type": "application/json",
-        "User-Agent": IOS_UA,
-        "X-Goog-Api-Key": INNERTUBE_API_KEY,
-        "X-YouTube-Client-Name": "5",
-        "X-YouTube-Client-Version": "19.29.1",
-    }
-
-    payload = {
-        "context": {
-            "client": {
-                "clientName": "IOS",
-                "clientVersion": "19.29.1",
-                "deviceModel": "iPhone16,2",
-                "userAgent": IOS_UA,
-                "hl": "en",
-                "gl": "US",
-            }
-        },
-        "videoId": video_id,
-    }
-
     title = uploader = description = ""
-    transcript_text = None
+    url = f"https://www.youtube.com/watch?v={video_id}"
 
     try:
-        # Step 1: Fetch video metadata + caption track list
-        resp = requests.post(
-            f"https://www.youtube.com/youtubei/v1/player?key={INNERTUBE_API_KEY}",
-            headers=headers,
-            json=payload,
-            timeout=15,
-        )
-        resp.raise_for_status()
-        data = resp.json()
+        from pytubefix import YouTube
+        yt = YouTube(url, client='WEB')
+        title = yt.title or ""
+        uploader = yt.author or ""
+        description = yt.description or ""
 
-        # Extract title, uploader, description
-        vd = data.get("videoDetails", {})
-        title = vd.get("title", "")
-        uploader = vd.get("author", "")
-        description = vd.get("shortDescription", "")
-
-        # Extract caption tracks
-        captions_data = (
-            data.get("captions", {})
-            .get("playerCaptionsTracklistRenderer", {})
-            .get("captionTracks", [])
-        )
-
-        if not captions_data:
-            print(f"[Transcript] Strategy 1 (Innertube): No captionTracks found")
+        captions = yt.captions
+        if not captions:
+            print(f"[Transcript] Strategy 1 (pytubefix): No captions available for {video_id}")
             return None, title, uploader, description
 
-        # Pick English track, fallback to first available
-        chosen = None
-        for track in captions_data:
-            lang = track.get("languageCode", "")
-            if lang.startswith("en"):
-                chosen = track
+        # Try to find English, Hindi, or first available caption track
+        chosen_caption = None
+        for lang_code in ['en', 'en-US', 'en-GB', 'hi', 'hi-IN']:
+            if lang_code in captions:
+                chosen_caption = captions[lang_code]
                 break
-        if not chosen:
-            chosen = captions_data[0]
+        if not chosen_caption:
+            chosen_caption = list(captions.values())[0]
 
-        base_url = chosen.get("baseUrl", "")
-        if not base_url:
-            return None, title, uploader, description
+        # Extract text from caption
+        raw_srt = chosen_caption.generate_srt_captions()
+        # Parse text lines out of SRT
+        lines = []
+        for line in raw_srt.splitlines():
+            cleaned = _clean_text(line)
+            if cleaned and not cleaned.isdigit() and '-->' not in cleaned:
+                lines.append(cleaned)
 
-        # Step 2: Download the caption XML
-        cap_resp = requests.get(
-            base_url + "&fmt=json3",
-            headers={"User-Agent": IOS_UA},
-            timeout=10,
-        )
-        cap_data = cap_resp.json()
-
-        snippets = []
-        for event in cap_data.get("events", []):
-            for seg in event.get("segs", []):
-                t = _clean_text(seg.get("utf8", ""))
-                if t and t != "\n":
-                    snippets.append(t)
-
-        transcript_text = " ".join(snippets).strip() or None
+        transcript_text = " ".join(lines).strip() or None
 
         if transcript_text:
-            print(f"[Transcript] Strategy 1 (Innertube) SUCCESS: {len(transcript_text)} chars, title='{title}'")
-        else:
-            print(f"[Transcript] Strategy 1 (Innertube): Empty transcript, got title='{title}'")
+            print(f"[Transcript] Strategy 1 (pytubefix) SUCCESS: {len(transcript_text)} chars, title='{title}'")
+            return transcript_text, title, uploader, description
 
     except Exception as e:
-        print(f"[Transcript] Strategy 1 (Innertube) failed: {e}")
+        print(f"[Transcript] Strategy 1 (pytubefix) failed: {e}")
 
-    return transcript_text, title, uploader, description
+    return None, title, uploader, description
 
 
 # ── Strategy 2: youtube-transcript-api v1.x (from Manual-tool-calling-agent notebook) ──
@@ -290,8 +236,8 @@ def fetch_transcript_tool(url: str) -> str:
 
     print(f"\n[Transcript] Fetching for Video ID: {video_id}")
 
-    # ── Strategy 1: Innertube iOS API (most reliable on AWS EC2) ────────────
-    text, title, uploader, description = _fetch_via_innertube(video_id)
+    # ── Strategy 1: pytubefix (PO token generator & client rotation) ────────────
+    text, title, uploader, description = _fetch_via_pytubefix(video_id)
     title_header = (
         f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
         if title else f"VIDEO ID: {video_id}\n"
