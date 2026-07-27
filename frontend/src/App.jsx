@@ -9,11 +9,14 @@ import ProcessingSection from './components/ProcessingSection'
 import ResultsSection    from './components/ResultsSection'
 import RecentNotes       from './components/RecentNotes'
 import BottomNav         from './components/BottomNav'
+import ProfileModal      from './components/ProfileModal'
 import HistoryPage       from './pages/HistoryPage'
+
 import { useHistory }    from './hooks/useHistory'
+import { useProfile }    from './hooks/useProfile'
 
 // ── Home page ─────────────────────────────────────────────────────────────────
-function HomePage({ history, addItem, removeItem, clearAll }) {
+function HomePage({ history, addItem, profile }) {
   const [url, setUrl]                     = useState('')
   const [instructions, setInstructions]   = useState('')
   const [isLoading, setIsLoading]         = useState(false)
@@ -37,11 +40,17 @@ function HomePage({ history, addItem, removeItem, clearAll }) {
       setProgress(Math.min(p, 88))
     }, 600)
 
+    // Combine user instructions with their education profile context
+    const profileContext = profile
+      ? `Target audience: ${profile.name} (${profile.education}). Tailor depth and examples for this level.`
+      : ''
+    const combinedInstructions = [profileContext, instructions.trim()].filter(Boolean).join(' ')
+
     try {
       const res = await fetch('/api/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ url: url.trim(), instructions: instructions.trim() }),
+        body: JSON.stringify({ url: url.trim(), instructions: combinedInstructions }),
       })
 
       const rawText = await res.text()
@@ -58,7 +67,6 @@ function HomePage({ history, addItem, removeItem, clearAll }) {
         setProgress(100)
         setResults(data)
 
-        // Save to persistent history
         addItem({
           id:        uuid(),
           title:     data.notes.title,
@@ -76,7 +84,6 @@ function HomePage({ history, addItem, removeItem, clearAll }) {
     }
   }
 
-  // When user clicks a recent note card → show that note's results
   const handleSelectNote = (item) => {
     setViewing(item)
     setResults({ notes: item.notes, pdf_urls: item.pdf_urls })
@@ -98,7 +105,8 @@ function HomePage({ history, addItem, removeItem, clearAll }) {
             Generate AI Notes<br />from YouTube
           </h1>
           <p className="text-outline font-body text-body-md max-w-sm mx-auto">
-            Turn any video into structured knowledge — summary, cheatsheet &amp; flashcards.
+            {profile ? `Welcome back, ${profile.name}! ` : ''}
+            Turn any video into structured knowledge.
           </p>
         </div>
 
@@ -158,14 +166,32 @@ function HomePage({ history, addItem, removeItem, clearAll }) {
   )
 }
 
-// ── Root App with routing ──────────────────────────────────────────────────────
+// ── Root App with routing & profile ─────────────────────────────────────────────
 export default function App() {
   const { history, addItem, removeItem, clearAll } = useHistory()
+  const { profile, saveProfile, hasProfile }       = useProfile()
+  const [isProfileModalOpen, setIsProfileModalOpen] = useState(false)
+
+  // Force onboarding modal open if user hasn't set their profile yet
+  const showModal = isProfileModalOpen || !hasProfile
+
+  const handleSaveProfile = (name, education) => {
+    saveProfile(name, education)
+    setIsProfileModalOpen(false)
+  }
 
   return (
     <div className="font-body text-on-surface min-h-screen">
       <ShaderBackground />
-      <Header />
+      <Header profile={profile} onOpenProfile={() => setIsProfileModalOpen(true)} />
+
+      <ProfileModal
+        isOpen={showModal}
+        initialProfile={profile}
+        onSave={handleSaveProfile}
+        onClose={() => setIsProfileModalOpen(false)}
+        isForceOnboarding={!hasProfile}
+      />
 
       <Routes>
         <Route
@@ -174,8 +200,7 @@ export default function App() {
             <HomePage
               history={history}
               addItem={addItem}
-              removeItem={removeItem}
-              clearAll={clearAll}
+              profile={profile}
             />
           }
         />
