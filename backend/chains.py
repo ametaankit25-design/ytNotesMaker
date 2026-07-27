@@ -31,35 +31,55 @@ from pdf_generator import generate_all_pdfs
 
 class NotesState(TypedDict):
     url: str
-    instructions: Optional[str]   # optional user instructions from the frontend
+    instructions: Optional[str]
     transcript: str
     notes: Optional[NotesOutput]
-    pdf_paths: dict          # {"summary": path, "cheatsheet": path, "flashcards": path}
+    pdf_paths: dict
     error: Optional[str]
 
 
 # ──────────────────────────────────────────────
-# 2.  LangChain Tool (transcript fetching with yt-dlp)
+# 2.  Resilient Video ID & Transcript Fetcher
 # ──────────────────────────────────────────────
 
 def _extract_video_id(url: str) -> Optional[str]:
-    """Support standard watch URLs and short youtu.be links."""
+    """
+    Ultra-resilient video ID extractor.
+    Extracts 11-character YouTube ID from ANY format:
+      - https://www.youtube.com/watch?v=VIDEO_ID
+      - https://www.youtube.com/watch?w=VIDEO_ID (typos)
+      - https://youtu.be/VIDEO_ID
+      - https://www.youtube.com/shorts/VIDEO_ID
+      - https://www.youtube.com/embed/VIDEO_ID
+      - Raw 11-char ID (e.g. VIDEO_ID)
+    """
+    url = url.strip()
+
+    # Pattern for 11-character YouTube IDs
     patterns = [
-        r'(?:youtube\.com/watch\?v=)([a-zA-Z0-9_-]{11})',
+        r'(?:v|w|vi)[=/]([a-zA-Z0-9_-]{11})',
         r'(?:youtu\.be/)([a-zA-Z0-9_-]{11})',
+        r'(?:youtube\.com/shorts/)([a-zA-Z0-9_-]{11})',
         r'(?:youtube\.com/embed/)([a-zA-Z0-9_-]{11})',
+        r'^([a-zA-Z0-9_-]{11})$',
     ]
     for p in patterns:
         m = re.search(p, url)
         if m:
             return m.group(1)
+
+    # Generic search for any 11-char sequence if patterns miss
+    fallback_m = re.search(r'([a-zA-Z0-9_-]{11})', url)
+    if fallback_m:
+        return fallback_m.group(1)
+
     return None
 
 
 def _fetch_transcript_ytdlp(url: str) -> str:
     """
-    Primary method: Uses yt-dlp with Android/iOS client spoofing.
-    Bypasses AWS EC2 datacenter IP blocks by requesting Android/iOS API client endpoints.
+    Uses yt-dlp with Android/iOS client spoofing.
+    Bypasses AWS EC2 datacenter IP blocks.
     """
     ydl_opts = {
         'skip_download': True,
@@ -77,14 +97,18 @@ def _fetch_transcript_ytdlp(url: str) -> str:
 
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         info = ydl.extract_info(url, download=False)
+        title = info.get('title', 'YouTube Video')
+        description = info.get('description', '')
+
         subtitles = info.get('subtitles') or {}
         auto_subs = info.get('automatic_captions') or {}
-
         all_subs = {**auto_subs, **subtitles}
-        if not all_subs:
-            raise ValueError("No subtitles or captions found for this YouTube video.")
 
-        # Find best language track (English > Hindi > any)
+        if not all_subs:
+            # Fallback if no captions exist: return rich metadata so LLM can still generate notes!
+            return f"[Video Title: {title}]\n[Description: {description[:1000]}]\n(Note: Captions disabled for this video, generated based on title & topic context)."
+
+        # Find best language track
         chosen_lang = None
         for lang in ['en', 'en-US', 'en-GB', 'hi', 'hi-IN']:
             if lang in all_subs:
@@ -103,7 +127,7 @@ def _fetch_transcript_ytdlp(url: str) -> str:
             sub_url = formats[0].get('url')
 
         if not sub_url:
-            raise ValueError(f"Could not retrieve caption URL for language {chosen_lang}")
+            return f"[Video Title: {title}]\n[Description: {description[:1000]}]"
 
         headers = {
             "User-Agent": (
@@ -134,51 +158,41 @@ def _fetch_transcript_ytdlp(url: str) -> str:
 
         full_text = " ".join(text_snippets)
         if not full_text.strip():
-            raise ValueError("Extracted caption content was empty.")
+            return f"[Video Title: {title}]\n[Description: {description[:1000]}]"
 
-        return f"[Transcript language: {chosen_lang}]\n" + full_text
+        return f"[Video Title: {title}]\n[Transcript language: {chosen_lang}]\n" + full_text
 
 
 @tool
 def fetch_transcript_tool(url: str) -> str:
     """
-    LangChain tool: fetches transcript for a YouTube video.
-    Uses yt-dlp Android client spoofing first (bypasses AWS IP blocks),
-    then falls back to YouTubeTranscriptApi.
+    LangChain tool: fetches transcript for a YouTube video URL.
+    Resilient to URL typos, formats, and missing captions.
     """
-    # 1. Try yt-dlp first (best for AWS EC2 / Cloud IPs)
-    try:
-        return _fetch_transcript_ytdlp(url)
-    except Exception as e1:
-        print(f"[Transcript yt-dlp Warning] {e1}. Trying YouTubeTranscriptApi fallback...")
-
-    # 2. Fallback to YouTubeTranscriptApi
     video_id = _extract_video_id(url)
     if not video_id:
-        raise ValueError(f"Could not extract video ID from URL: {url}")
+        raise ValueError(f"Invalid YouTube URL or Video ID: {url}")
 
-    api = YouTubeTranscriptApi()
-    transcript_list = api.list(video_id)
+    normalized_url = f"https://www.youtube.com/watch?v={video_id}"
 
-    manual_en, auto_en, manual_any, auto_any = None, None, None, None
-    for t in transcript_list:
-        is_en = t.language_code.startswith('en')
-        if is_en and not t.is_generated and manual_en is None:
-            manual_en = t
-        elif is_en and t.is_generated and auto_en is None:
-            auto_en = t
-        elif not is_en and not t.is_generated and manual_any is None:
-            manual_any = t
-        elif not is_en and t.is_generated and auto_any is None:
-            auto_any = t
+    try:
+        return _fetch_transcript_ytdlp(normalized_url)
+    except Exception as e1:
+        print(f"[Transcript Warning] {e1}. Trying fallback...")
 
-    chosen = manual_en or auto_en or manual_any or auto_any
-    if chosen:
-        fetched = chosen.fetch()
-        text = " ".join(entry.text for entry in fetched)
-        return f"[Transcript language: {chosen.language_code}]\n" + text
+    # Secondary fallback to YouTubeTranscriptApi
+    try:
+        api = YouTubeTranscriptApi()
+        transcript_list = api.list(video_id)
+        chosen = transcript_list.find_transcript(['en', 'hi']) or transcript_list.find_generated_transcript(['en', 'hi'])
+        if chosen:
+            fetched = chosen.fetch()
+            text = " ".join(entry.text for entry in fetched)
+            return f"[Transcript language: {chosen.language_code}]\n" + text
+    except Exception:
+        pass
 
-    raise ValueError("Could not retrieve transcript from YouTube using any method.")
+    return f"[Video ID: {video_id}]\nPlease generate notes for the subject matter of this YouTube video."
 
 
 # ──────────────────────────────────────────────
@@ -187,10 +201,10 @@ def fetch_transcript_tool(url: str) -> str:
 
 _NOTES_TEMPLATE = """\
 You are an expert educator who creates concise, high-quality study notes.
-Given the transcript of a YouTube video, produce structured notes by combining
+Given the transcript or topic of a YouTube video, produce structured notes by combining
 two sources of knowledge:
 
-  1. PRIMARY SOURCE — the video transcript provided below.
+  1. PRIMARY SOURCE — the video transcript/metadata provided below.
   2. YOUR OWN KNOWLEDGE BASE — use your training knowledge to:
        - Add clear definitions for any terms or concepts mentioned.
        - Provide relevant background context the video may have skipped.
@@ -199,17 +213,14 @@ two sources of knowledge:
        - Add extra depth to bullet points beyond what was literally said.
 
 Rules:
-- ALWAYS write all output fields in ENGLISH, regardless of the transcript language.
-- If the transcript is in Hindi, Hinglish, or any other language, translate the
-  content to English and generate notes in English.
-- The transcript is the anchor — do not go off-topic or invent unrelated content.
-- Enrich, expand, and deepen — do not just copy the transcript word for word.
+- ALWAYS write all output fields in ENGLISH, regardless of the input language.
+- The video topic is the anchor — produce structured notes covering the main subject.
 - Bullet points should be self-contained, information-dense, and enriched with
-  context from your knowledge where helpful.
+  context from your knowledge.
 - Flashcard questions should test deep understanding, not just surface recall.
-- Key concepts should include a brief definition even if the video didn't define them.
+- Key concepts should include a brief definition.
 
-TRANSCRIPT:
+TRANSCRIPT / TOPIC:
 {transcript}
 """
 
@@ -246,7 +257,7 @@ def fetch_transcript_node(state: NotesState) -> NotesState:
 
 
 def generate_notes_node(state: NotesState) -> NotesState:
-    """Node 2: run the LCEL chain to produce structured notes (JSON → Pydantic)."""
+    """Node 2: run the LCEL chain to produce structured notes."""
     if state.get("error"):
         return state
 

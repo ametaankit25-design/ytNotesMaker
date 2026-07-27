@@ -40,8 +40,8 @@ float snoise(vec2 v) {
 void main() {
   vec2 uv = v_texCoord;
   vec2 mouse = u_mouse / u_resolution;
-  vec3 color1 = vec3(0.96, 0.94, 0.91); // warm off-white #f5f0e8
-  vec3 color2 = vec3(1.0, 0.80, 0.0);   // accent yellow #ffcc00
+  vec3 color1 = vec3(0.96, 0.94, 0.91);
+  vec3 color2 = vec3(1.0, 0.80, 0.0);
   float noise1 = snoise(uv * 2.0 + u_time * 0.08) * 0.5 + 0.5;
   float noise2 = snoise(uv * 4.0 - u_time * 0.12 + mouse * 2.0) * 0.5 + 0.5;
   float dist = distance(uv, mouse);
@@ -59,35 +59,51 @@ export default function ShaderBackground() {
     if (!canvas) return
 
     const syncSize = () => {
-      const w = canvas.clientWidth || 1280
-      const h = canvas.clientHeight || 720
+      const w = canvas.clientWidth || window.innerWidth || 1280
+      const h = canvas.clientHeight || window.innerHeight || 720
       if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w; canvas.height = h
+        canvas.width = w
+        canvas.height = h
       }
     }
     const ro = new ResizeObserver(syncSize)
     ro.observe(canvas)
     syncSize()
 
-    const gl = canvas.getContext('webgl')
+    const gl = canvas.getContext('webgl') || canvas.getContext('experimental-webgl')
     if (!gl) return
 
     const compile = (type, src) => {
       const s = gl.createShader(type)
       gl.shaderSource(s, src)
       gl.compileShader(s)
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
+        return null
+      }
       return s
     }
+
+    const vsShader = compile(gl.VERTEX_SHADER, VS)
+    const fsShader = compile(gl.FRAGMENT_SHADER, FS)
+    if (!vsShader || !fsShader) return
+
     const prog = gl.createProgram()
-    gl.attachShader(prog, compile(gl.VERTEX_SHADER, VS))
-    gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS))
+    gl.attachShader(prog, vsShader)
+    gl.attachShader(prog, fsShader)
     gl.linkProgram(prog)
+
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
+      return
+    }
+
     gl.useProgram(prog)
 
     const buf = gl.createBuffer()
     gl.bindBuffer(gl.ARRAY_BUFFER, buf)
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW)
     const pos = gl.getAttribLocation(prog, 'a_position')
+    if (pos === -1) return
+
     gl.enableVertexAttribArray(pos)
     gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0)
 
@@ -98,8 +114,10 @@ export default function ShaderBackground() {
     let mouse = { x: canvas.width / 2, y: canvas.height / 2 }
     const onMouseMove = (e) => {
       const r = canvas.getBoundingClientRect()
-      mouse.x = ((e.clientX - r.left) / r.width) * canvas.width
-      mouse.y = (1 - (e.clientY - r.top) / r.height) * canvas.height
+      if (r.width && r.height) {
+        mouse.x = ((e.clientX - r.left) / r.width) * canvas.width
+        mouse.y = (1 - (e.clientY - r.top) / r.height) * canvas.height
+      }
     }
     window.addEventListener('mousemove', onMouseMove)
 
@@ -107,9 +125,9 @@ export default function ShaderBackground() {
     const render = (t) => {
       syncSize()
       gl.viewport(0, 0, canvas.width, canvas.height)
-      gl.uniform1f(uTime, t * 0.001)
-      gl.uniform2f(uRes, canvas.width, canvas.height)
-      gl.uniform2f(uMouse, mouse.x, mouse.y)
+      if (uTime) gl.uniform1f(uTime, t * 0.001)
+      if (uRes) gl.uniform2f(uRes, canvas.width, canvas.height)
+      if (uMouse) gl.uniform2f(uMouse, mouse.x, mouse.y)
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
       raf = requestAnimationFrame(render)
     }
