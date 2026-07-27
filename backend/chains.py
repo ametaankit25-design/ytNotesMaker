@@ -221,13 +221,17 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
         "subtitleslangs": ["en", "en-US", "hi"],
         "quiet": True,
         "no_warnings": True,
-        "extractor_args": {"youtube": {"player_client": ["ios", "android", "web"]}},
+        "extractor_args": {"youtube": {"player_client": ["web", "ios", "android"]}},
         "socket_timeout": 15,
+        "http_headers": {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        },
     }
 
     if use_cookies:
         ydl_opts["cookiefile"] = cookies_path
-        print(f"[Transcript] Strategy 3 (yt-dlp): Using cookies.txt for auth")
+        print(f"[Transcript] Strategy 3 (yt-dlp): Using cookies.txt for auth ({os.path.getsize(cookies_path)} bytes)")
     else:
         print(f"[Transcript] Strategy 3 (yt-dlp): No cookies.txt found, trying without auth")
 
