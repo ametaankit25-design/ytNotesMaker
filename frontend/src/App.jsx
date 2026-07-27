@@ -38,12 +38,19 @@ function HomePage({ history, addItem, removeItem, clearAll }) {
     }, 600)
 
     try {
-      const res  = await fetch('/api/generate', {
-        method:  'POST',
+      const res = await fetch('/api/generate', {
+        method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ url: url.trim(), instructions: instructions.trim() }),
+        body: JSON.stringify({ url: url.trim(), instructions: instructions.trim() }),
       })
-      const data = await res.json()
+
+      const rawText = await res.text()
+      let data = {}
+      try {
+        data = JSON.parse(rawText)
+      } catch {
+        throw new Error(`Server returned status ${res.status} (${res.statusText || 'Gateway Timeout/Error'}). Please try again.`)
+      }
 
       if (!res.ok) {
         setError(data.error || 'Something went wrong. Please try again.')
@@ -62,7 +69,7 @@ function HomePage({ history, addItem, removeItem, clearAll }) {
         })
       }
     } catch (err) {
-      setError(`Network error: ${err.message}. Is Flask running on port 5000?`)
+      setError(`${err.message}`)
     } finally {
       clearInterval(tick)
       setIsLoading(false)
