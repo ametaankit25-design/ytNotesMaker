@@ -11,7 +11,6 @@ Graph flow:
 import json
 import re
 import html
-import urllib.parse
 import xml.etree.ElementTree as ET
 from typing import TypedDict, Optional
 import requests
@@ -20,7 +19,6 @@ import yt_dlp
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import tool
 from langgraph.graph import StateGraph, END
-from youtube_transcript_api import YouTubeTranscriptApi
 
 from llm import llm_model
 from notes_schema import NotesOutput
@@ -41,7 +39,7 @@ class NotesState(TypedDict):
 
 
 # ──────────────────────────────────────────────
-# 2.  Resilient Video ID & Transcript Fetcher
+# 2.  Helpers
 # ──────────────────────────────────────────────
 
 def _extract_video_id(url: str) -> Optional[str]:
@@ -70,238 +68,226 @@ def _clean_text(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
-# ── Strategy 1: YouTubeTranscriptApi (most reliable, no yt-dlp needed) ──────────
-def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
+# ──────────────────────────────────────────────
+# 3.  Transcript Strategies
+# ──────────────────────────────────────────────
+
+# ── Strategy 1: YouTube Innertube iOS API (bypasses bot detection on EC2) ─────────
+def _fetch_via_innertube(video_id: str) -> tuple[Optional[str], str, str, str]:
     """
-    Use youtube-transcript-api to directly fetch subtitles.
-    Works best from non-datacenter IPs but try anyway.
+    Calls YouTube's internal Innertube API using iOS client credentials.
+    This mimics the official YouTube iOS app traffic — NOT blocked by AWS IP.
+    Returns (transcript_text, title, uploader, description).
     """
+    # Official YouTube iOS app API key (public, embedded in the app binary)
+    INNERTUBE_API_KEY = "AIzaSyB-63vPrdThhKuerbB2N_l7Kwwcxj6yUAc"
+    IOS_UA = "com.google.ios.youtube/19.29.1 (iPhone16,2; U; CPU iOS 17_5_1 like Mac OS X;)"
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": IOS_UA,
+        "X-Goog-Api-Key": INNERTUBE_API_KEY,
+        "X-YouTube-Client-Name": "5",
+        "X-YouTube-Client-Version": "19.29.1",
+    }
+
+    payload = {
+        "context": {
+            "client": {
+                "clientName": "IOS",
+                "clientVersion": "19.29.1",
+                "deviceModel": "iPhone16,2",
+                "userAgent": IOS_UA,
+                "hl": "en",
+                "gl": "US",
+            }
+        },
+        "videoId": video_id,
+    }
+
+    title = uploader = description = ""
+    transcript_text = None
+
     try:
-        data = YouTubeTranscriptApi.get_transcript(video_id, languages=['en', 'en-US', 'en-GB', 'hi', 'hi-IN'])
-        text = " ".join(_clean_text(entry['text']) for entry in data)
-        if text.strip():
-            print(f"[Transcript] Strategy 1 (TranscriptAPI) SUCCESS: {len(text)} chars")
-            return text
-    except Exception as e:
-        print(f"[Transcript] Strategy 1 (TranscriptAPI) failed: {e}")
-    return None
+        # Step 1: Fetch video metadata + caption track list
+        resp = requests.post(
+            f"https://www.youtube.com/youtubei/v1/player?key={INNERTUBE_API_KEY}",
+            headers=headers,
+            json=payload,
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
+        # Extract title, uploader, description
+        vd = data.get("videoDetails", {})
+        title = vd.get("title", "")
+        uploader = vd.get("author", "")
+        description = vd.get("shortDescription", "")
 
-# ── Strategy 2: YouTube timedtext API (direct HTTP, no library needed) ───────────
-def _fetch_via_timedtext(video_id: str) -> Optional[str]:
-    """
-    Fetch captions directly from YouTube's timedtext endpoint using the
-    video's page-embedded caption track URL. Works even when libraries fail.
-    """
-    try:
-        headers = {
-            "User-Agent": (
-                "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) "
-                "AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
-            ),
-            "Accept-Language": "en-US,en;q=0.9",
-        }
-        watch_url = f"https://www.youtube.com/watch?v={video_id}"
-        resp = requests.get(watch_url, headers=headers, timeout=15)
-        page = resp.text
+        # Extract caption tracks
+        captions_data = (
+            data.get("captions", {})
+            .get("playerCaptionsTracklistRenderer", {})
+            .get("captionTracks", [])
+        )
 
-        # Extract captions JSON blob from page source
-        caption_match = re.search(r'"captionTracks":(\[.*?\])', page)
-        if not caption_match:
-            print(f"[Transcript] Strategy 2 (timedtext): No captionTracks found in page")
-            return None
+        if not captions_data:
+            print(f"[Transcript] Strategy 1 (Innertube): No captionTracks found")
+            return None, title, uploader, description
 
-        caption_tracks = json.loads(caption_match.group(1))
-        if not caption_tracks:
-            return None
-
-        # Prefer English, fall back to first available track
-        chosen_url = None
-        for track in caption_tracks:
-            lang = track.get('languageCode', '')
-            if lang.startswith('en'):
-                chosen_url = track.get('baseUrl')
+        # Pick English track, fallback to first available
+        chosen = None
+        for track in captions_data:
+            lang = track.get("languageCode", "")
+            if lang.startswith("en"):
+                chosen = track
                 break
-        if not chosen_url:
-            chosen_url = caption_tracks[0].get('baseUrl')
+        if not chosen:
+            chosen = captions_data[0]
 
-        if not chosen_url:
-            return None
+        base_url = chosen.get("baseUrl", "")
+        if not base_url:
+            return None, title, uploader, description
 
-        # Fetch the caption XML
-        cap_resp = requests.get(chosen_url, headers=headers, timeout=10)
-        cap_xml = cap_resp.text
+        # Step 2: Download the caption XML
+        cap_resp = requests.get(
+            base_url + "&fmt=json3",
+            headers={"User-Agent": IOS_UA},
+            timeout=10,
+        )
+        cap_data = cap_resp.json()
 
-        root = ET.fromstring(cap_xml)
         snippets = []
-        for elem in root.iter('text'):
-            t = _clean_text(elem.text or '')
-            if t:
-                snippets.append(t)
+        for event in cap_data.get("events", []):
+            for seg in event.get("segs", []):
+                t = _clean_text(seg.get("utf8", ""))
+                if t and t != "\n":
+                    snippets.append(t)
 
-        text = " ".join(snippets)
-        if text.strip():
-            print(f"[Transcript] Strategy 2 (timedtext) SUCCESS: {len(text)} chars")
-            return text
+        transcript_text = " ".join(snippets).strip() or None
+
+        if transcript_text:
+            print(f"[Transcript] Strategy 1 (Innertube) SUCCESS: {len(transcript_text)} chars, title='{title}'")
+        else:
+            print(f"[Transcript] Strategy 1 (Innertube): Empty transcript, got title='{title}'")
 
     except Exception as e:
-        print(f"[Transcript] Strategy 2 (timedtext) failed: {e}")
+        print(f"[Transcript] Strategy 1 (Innertube) failed: {e}")
+
+    return transcript_text, title, uploader, description
+
+
+# ── Strategy 2: youtube-transcript-api (direct library, simpler) ─────────────────
+def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
+    try:
+        from youtube_transcript_api import YouTubeTranscriptApi
+        data = YouTubeTranscriptApi.get_transcript(
+            video_id, languages=["en", "en-US", "en-GB", "hi", "hi-IN"]
+        )
+        text = " ".join(_clean_text(e["text"]) for e in data)
+        if text.strip():
+            print(f"[Transcript] Strategy 2 (TranscriptAPI) SUCCESS: {len(text)} chars")
+            return text
+    except Exception as e:
+        print(f"[Transcript] Strategy 2 (TranscriptAPI) failed: {e}")
     return None
 
 
-# ── Strategy 3: yt-dlp with client spoofing ────────────────────────────────────
-def _fetch_via_ytdlp(video_id: str) -> tuple[Optional[str], str, str, str]:
-    """
-    Use yt-dlp with Android/iOS client spoofing. Returns (transcript, title, uploader, description).
-    """
+# ── Strategy 3: yt-dlp with client spoofing ──────────────────────────────────────
+def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
     url = f"https://www.youtube.com/watch?v={video_id}"
     ydl_opts = {
-        'skip_download': True,
-        'writesubtitles': True,
-        'writeautomaticsub': True,
-        'subtitleslangs': ['en', 'en-US', 'en-GB', 'hi', 'hi-IN'],
-        'quiet': True,
-        'no_warnings': True,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['android', 'ios', 'web'],
-            }
-        }
+        "skip_download": True,
+        "writesubtitles": True,
+        "writeautomaticsub": True,
+        "subtitleslangs": ["en", "en-US", "hi"],
+        "quiet": True,
+        "no_warnings": True,
+        "extractor_args": {"youtube": {"player_client": ["ios"]}},
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
-            title = info.get('title', '') or ''
-            uploader = info.get('uploader', '') or ''
-            description = info.get('description', '') or ''
-
-            subtitles = info.get('subtitles') or {}
-            auto_subs = info.get('automatic_captions') or {}
-            all_subs = {**subtitles, **auto_subs}
-
+            all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
             if not all_subs:
-                print(f"[Transcript] Strategy 3 (yt-dlp): No subtitles found")
-                return None, title, uploader, description
-
-            chosen_lang = None
-            for lang in ['en', 'en-US', 'en-GB', 'hi', 'hi-IN']:
-                if lang in all_subs:
-                    chosen_lang = lang
-                    break
-            if not chosen_lang:
-                chosen_lang = list(all_subs.keys())[0]
-
+                return None
+            chosen_lang = next((l for l in ["en", "en-US", "hi"] if l in all_subs), list(all_subs.keys())[0])
             formats = all_subs[chosen_lang]
-            sub_url = None
-            for fmt in formats:
-                if fmt.get('ext') in ['json3', 'srv1', 'ttml', 'vtt']:
-                    sub_url = fmt.get('url')
-                    break
+            sub_url = next((f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1"]), None)
             if not sub_url and formats:
-                sub_url = formats[0].get('url')
+                sub_url = formats[0].get("url")
             if not sub_url:
-                return None, title, uploader, description
-
-            resp = requests.get(sub_url, headers={
-                "User-Agent": "Mozilla/5.0 (Android 14; Mobile; rv:120.0) Gecko/120.0 Firefox/120.0"
-            }, timeout=10)
+                return None
+            resp = requests.get(sub_url, headers={"User-Agent": "com.google.ios.youtube/19.29.1"}, timeout=10)
             content = resp.text
-
             snippets = []
-            if 'json3' in (sub_url or '') or content.strip().startswith('{'):
-                try:
-                    data = json.loads(content)
-                    for ev in data.get('events', []):
-                        for s in ev.get('segs', []):
-                            t = _clean_text(s.get('utf8', ''))
-                            if t:
-                                snippets.append(t)
-                except Exception:
-                    pass
-
-            if not snippets:
-                lines = content.splitlines()
-                for line in lines:
-                    cleaned = _clean_text(line)
-                    if (cleaned and not cleaned.isdigit() and
-                            '-->' not in cleaned and
-                            not cleaned.startswith('WEBVTT')):
-                        snippets.append(cleaned)
-
-            text = " ".join(snippets)
-            if text.strip():
+            try:
+                jdata = json.loads(content)
+                for ev in jdata.get("events", []):
+                    for s in ev.get("segs", []):
+                        t = _clean_text(s.get("utf8", ""))
+                        if t:
+                            snippets.append(t)
+            except Exception:
+                for line in content.splitlines():
+                    c = _clean_text(line)
+                    if c and not c.isdigit() and "-->" not in c and not c.startswith("WEBVTT"):
+                        snippets.append(c)
+            text = " ".join(snippets).strip()
+            if text:
                 print(f"[Transcript] Strategy 3 (yt-dlp) SUCCESS: {len(text)} chars")
-                return text, title, uploader, description
-
+                return text
     except Exception as e:
         print(f"[Transcript] Strategy 3 (yt-dlp) failed: {e}")
+    return None
 
-    return None, '', '', ''
 
-
-# ── Strategy 4: video metadata via yt-dlp (title + description only) ─────────────
-def _fetch_metadata_only(video_id: str) -> tuple[str, str, str]:
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    ydl_opts = {'skip_download': True, 'quiet': True, 'no_warnings': True}
-    try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-            return (info.get('title', ''), info.get('uploader', ''), info.get('description', ''))
-    except Exception:
-        return ('', '', '')
-
+# ──────────────────────────────────────────────
+# 4.  Main Transcript Tool
+# ──────────────────────────────────────────────
 
 @tool
 def fetch_transcript_tool(url: str) -> str:
-    """
-    Multi-strategy YouTube transcript fetcher. Tries 3 strategies before
-    falling back to metadata-only note generation.
-    """
+    """Multi-strategy YouTube transcript fetcher robust to AWS IP blocks."""
     video_id = _extract_video_id(url)
     if not video_id:
         raise ValueError(f"Invalid YouTube URL or Video ID: {url}")
 
-    print(f"\n[Transcript] Fetching transcript for Video ID: {video_id}")
+    print(f"\n[Transcript] Fetching for Video ID: {video_id}")
 
-    # Fetch title/uploader via yt-dlp regardless (needed for all strategies)
-    title, uploader, description = '', '', ''
-    try:
-        title, uploader, description = _fetch_metadata_only(video_id)
-    except Exception:
-        pass
+    # ── Strategy 1: Innertube iOS API (most reliable on AWS EC2) ────────────
+    text, title, uploader, description = _fetch_via_innertube(video_id)
+    title_header = (
+        f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
+        if title else f"VIDEO ID: {video_id}\n"
+    )
+    if text:
+        return f"{title_header}\nTRANSCRIPT:\n{text}"
 
-    title_header = f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n" if title else f"VIDEO ID: {video_id}\n"
-
-    # ── Strategy 1: youtube-transcript-api ──────────────────────────────────
+    # ── Strategy 2: youtube-transcript-api ──────────────────────────────────
     text = _fetch_via_transcript_api(video_id)
     if text:
         return f"{title_header}\nTRANSCRIPT:\n{text}"
 
-    # ── Strategy 2: timedtext direct HTTP ───────────────────────────────────
-    text = _fetch_via_timedtext(video_id)
+    # ── Strategy 3: yt-dlp ──────────────────────────────────────────────────
+    text = _fetch_via_ytdlp(video_id)
     if text:
-        return f"{title_header}\nTRANSCRIPT:\n{text}"
-
-    # ── Strategy 3: yt-dlp with client spoofing ──────────────────────────────
-    text, t, u, d = _fetch_via_ytdlp(video_id)
-    if text:
-        if t:
-            title_header = f"VIDEO TITLE: {t}\nSPEAKER / CHANNEL: {u}\n"
         return f"{title_header}\nTRANSCRIPT:\n{text}"
 
     # ── Strategy 4: Metadata fallback ───────────────────────────────────────
-    print(f"[Transcript] ALL strategies failed for {video_id}. Using metadata fallback.")
-    desc_excerpt = (description or d or '')[:2000]
+    print(f"[Transcript] ALL strategies failed for {video_id}. Using metadata.")
+    desc_excerpt = (description or "")[:2000]
     return (
         f"{title_header}\n"
-        f"NOTE: Live transcript could not be fetched (possibly blocked by YouTube for server IPs).\n"
-        f"Please generate structured study notes based ONLY on the video title and description below.\n"
+        f"NOTE: Live transcript unavailable (YouTube bot-detection on server IP).\n"
+        f"Generate notes strictly based on the VIDEO TITLE and DESCRIPTION below:\n"
         f"VIDEO DESCRIPTION:\n{desc_excerpt}"
     )
 
 
 # ──────────────────────────────────────────────
-# 3.  LCEL Notes Chain (STRICT VIDEO-BASED NOTES)
+# 5.  LCEL Notes Chain
 # ──────────────────────────────────────────────
 
 _NOTES_TEMPLATE = """\
@@ -329,80 +315,65 @@ def build_notes_chain(llm=None, instructions: str = ""):
         llm = llm_model()
 
     extra = (
-        f"\nSPECIAL USER INSTRUCTIONS (apply these focus areas to the video notes): {instructions.strip()}\n"
-        if instructions and instructions.strip()
-        else ""
+        f"\nSPECIAL USER INSTRUCTIONS: {instructions.strip()}\n"
+        if instructions and instructions.strip() else ""
     )
-    template = _NOTES_TEMPLATE + extra
-
     prompt = PromptTemplate(
         input_variables=["transcript"],
-        template=template,
+        template=_NOTES_TEMPLATE + extra,
     )
-
     return prompt | llm.with_structured_output(NotesOutput)
 
 
 # ──────────────────────────────────────────────
-# 4.  LangGraph Nodes
+# 6.  LangGraph Nodes
 # ──────────────────────────────────────────────
 
-MAX_TRANSCRIPT_LENGTH = 12000  # ~3000 tokens for context limit
+MAX_TRANSCRIPT_LENGTH = 12000
 
 def fetch_transcript_node(state: NotesState) -> NotesState:
-    """Node 1: fetch exact video transcript from YouTube with safe dynamic truncation."""
+    """Node 1: fetch video transcript with safe dynamic truncation."""
     try:
-        raw_transcript = fetch_transcript_tool.invoke({"url": state["url"]})
+        raw = fetch_transcript_tool.invoke({"url": state["url"]})
 
         print(f"\n{'='*60}")
-        print(f"[DEBUG] Transcript fetched: {len(raw_transcript)} characters")
-        print(f"[DEBUG] First 300 chars:\n{raw_transcript[:300]}")
+        print(f"[DEBUG] Transcript fetched: {len(raw)} characters")
+        print(f"[DEBUG] First 300 chars:\n{raw[:300]}")
         print(f"{'='*60}\n")
 
-        if len(raw_transcript) <= MAX_TRANSCRIPT_LENGTH:
-            return {**state, "transcript": raw_transcript, "error": None}
+        if len(raw) <= MAX_TRANSCRIPT_LENGTH:
+            return {**state, "transcript": raw, "error": None}
 
-        # --- Dynamic Header vs Body Separation ---
-        lines = raw_transcript.split('\n')
-        header_lines = []
-        body_start_index = 0
-
+        # Dynamic header/body split
+        lines = raw.split('\n')
+        header_lines, body_start = [], 0
         for i, line in enumerate(lines):
             stripped = line.strip()
-            if any(k in stripped for k in ['VIDEO TITLE:', 'SPEAKER / CHANNEL:', 'TRANSCRIPT LANGUAGE:', 'VIDEO ID:', 'DESCRIPTION:']):
+            if any(k in stripped for k in ['VIDEO TITLE:', 'SPEAKER / CHANNEL:', 'VIDEO ID:', 'DESCRIPTION:']):
                 header_lines.append(line)
-                body_start_index = i + 1
+                body_start = i + 1
             elif stripped in ['TRANSCRIPT:', 'FULL VERBATIM TRANSCRIPT:']:
                 header_lines.append(line)
-                body_start_index = i + 1
+                body_start = i + 1
                 break
             elif i >= 10:
                 break
 
-        header_str = '\n'.join(header_lines) if header_lines else ""
-        transcript_body = '\n'.join(lines[body_start_index:]).strip()
+        header_str = '\n'.join(header_lines)
+        body = '\n'.join(lines[body_start:]).strip() or raw
 
-        if not transcript_body:
-            transcript_body = raw_transcript
-            header_str = ""
+        budget = max(1000, MAX_TRANSCRIPT_LENGTH - len(header_str) - 150)
+        truncated = body[:budget]
+        cut = max(0, len(body) - len(truncated))
 
-        header_len = len(header_str)
-        available_body_budget = max(1000, MAX_TRANSCRIPT_LENGTH - header_len - 150)
-        truncated_body = transcript_body[:available_body_budget]
-        cut_chars = max(0, len(transcript_body) - len(truncated_body))
+        print(f"⚠️  Truncation: kept {len(truncated)} chars, cut {cut} from end")
 
-        print(f"⚠️  [Transcript Node] Truncation Applied:")
-        print(f"    - Kept header: {header_len} chars")
-        print(f"    - Kept body:   {len(truncated_body)} chars")
-        print(f"    - Cut off:     {cut_chars} chars from end")
-
-        final_transcript = (
+        final = (
             (header_str + "\n\n" if header_str else "")
-            + truncated_body
-            + (f"\n\n[...transcript truncated ({cut_chars} chars cut)...]" if cut_chars > 0 else "")
+            + truncated
+            + (f"\n\n[...{cut} chars truncated...]" if cut > 0 else "")
         )
-
-        return {**state, "transcript": final_transcript, "error": None}
+        return {**state, "transcript": final, "error": None}
     except Exception as e:
         return {**state, "transcript": "", "error": f"Transcript error: {e}"}
 
@@ -410,7 +381,6 @@ def fetch_transcript_node(state: NotesState) -> NotesState:
 def generate_notes_node(state: NotesState) -> NotesState:
     if state.get("error"):
         return state
-
     try:
         chain = build_notes_chain(instructions=state.get("instructions", ""))
         notes: NotesOutput = chain.invoke({"transcript": state["transcript"]})
@@ -422,7 +392,6 @@ def generate_notes_node(state: NotesState) -> NotesState:
 def generate_pdfs_node(state: NotesState) -> NotesState:
     if state.get("error"):
         return state
-
     try:
         pdf_paths = generate_all_pdfs(state["notes"])
         return {**state, "pdf_paths": pdf_paths, "error": None}
@@ -431,21 +400,18 @@ def generate_pdfs_node(state: NotesState) -> NotesState:
 
 
 # ──────────────────────────────────────────────
-# 5.  Build & Compile the LangGraph
+# 7.  Build & Compile the LangGraph
 # ──────────────────────────────────────────────
 
 def build_graph():
     graph = StateGraph(NotesState)
-
     graph.add_node("fetch_transcript", fetch_transcript_node)
     graph.add_node("generate_notes", generate_notes_node)
     graph.add_node("generate_pdfs", generate_pdfs_node)
-
     graph.set_entry_point("fetch_transcript")
     graph.add_edge("fetch_transcript", "generate_notes")
     graph.add_edge("generate_notes", "generate_pdfs")
     graph.add_edge("generate_pdfs", END)
-
     return graph.compile()
 
 
