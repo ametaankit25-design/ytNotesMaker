@@ -1,16 +1,10 @@
 # ─────────────────────────────────────────────────────────────────
-# docker-compose.yml  —  Local development / testing
+# docker-compose.yml  —  Local & AWS t3.micro Deployment
 #
 # Services:
 #   ollama    — Local LLM server (llama3.2 + nomic-embed-text)
 #   backend   — Flask API + LangGraph pipeline
 #   frontend  — React app served via nginx (proxies /api → backend)
-#
-# Usage:
-#   docker compose up --build          # first run
-#   docker compose up -d               # background
-#   docker compose logs -f backend     # view logs
-#   docker compose down                # stop all
 # ─────────────────────────────────────────────────────────────────
 version: '3.9'
 
@@ -32,7 +26,7 @@ services:
       retries: 5
       start_period: 20s
 
-  # ── Model Initialiser (runs once, pulls models into Ollama) ──
+  # ── Model Initialiser (pulls models into Ollama) ─────────────
   ollama-init:
     image: ollama/ollama:latest
     container_name: ytnm-ollama-init
@@ -49,7 +43,7 @@ services:
         ollama pull nomic-embed-text &&
         echo 'All models ready!'
       "
-    restart: "no"   # run once and exit
+    restart: "no"
 
   # ── Backend (Flask API) ──────────────────────────────────────
   backend:
@@ -57,6 +51,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     container_name: ytnm-backend
+    env_file:
+      - .env
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - FLASK_ENV=production
@@ -89,5 +85,5 @@ services:
     restart: unless-stopped
 
 volumes:
-  ollama_data:    # Ollama model weights (~4 GB for both models)
-  pdf_output:     # Generated PDF files
+  ollama_data:
+  pdf_output:

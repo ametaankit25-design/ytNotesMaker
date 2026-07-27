@@ -1,12 +1,25 @@
 #!/bin/bash
 # ─────────────────────────────────────────────────────────────────
 # scripts/setup-aws-ec2.sh
-# User Data script for automated EC2 setup on Amazon Linux 2023 / Ubuntu
-# Installs Docker, Docker Compose, Git and clones repo if URL provided.
+# Automated EC2 setup optimized for AWS t3.micro (Free Tier - 1GB RAM)
+# 1. Adds 4GB Swap space (crucial for t3.micro memory stability)
+# 2. Installs Docker & Docker Compose
 # ─────────────────────────────────────────────────────────────────
 set -e
 
-echo "=== Installing Docker & Prerequisites ==="
+echo "=== 1/3 Configuring 4GB Swap Memory for t3.micro ==="
+if [ ! -f /swapfile ]; then
+    sudo fallocate -l 4G /swapfile || sudo dd if=/dev/zero of=/swapfile bs=1M count=4096
+    sudo chmod 600 /swapfile
+    sudo mkswap /swapfile
+    sudo swapon /swapfile
+    echo '/swapfile swap swap defaults 0 0' | sudo tee -a /etc/fstab
+    echo "Swap created successfully!"
+else
+    echo "Swap file already exists."
+fi
+
+echo "=== 2/3 Installing Docker & Prerequisites ==="
 if [ -f /etc/os-release ]; then
     . /etc/os-release
     OS=$ID
@@ -31,6 +44,7 @@ fi
 
 sudo usermod -aG docker $USER
 
-echo "=== Docker installed successfully ==="
+echo "=== 3/3 Setup Complete! ==="
 docker --version
 docker compose version || docker-compose --version
+free -h
