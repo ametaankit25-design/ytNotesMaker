@@ -1,5 +1,5 @@
 # ─────────────────────────────────────────────────────────────────
-# docker-compose.yml — Amazon Linux 2023 Direct Image Execution (HTTP + HTTPS)
+# docker-compose.yml — Amazon Linux 2023 Direct Image Execution
 # ─────────────────────────────────────────────────────────────────
 services:
 
@@ -12,12 +12,16 @@ services:
     env_file:
       - .env
     environment:
-      - OLLAMA_BASE_URL=http://localhost:11434
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - FLASK_ENV=production
     ports:
       - "5000:5000"
     volumes:
       - pdf_output:/app/output
+    networks:
+      - ytnm-net
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     restart: always
 
   frontend:
@@ -28,12 +32,15 @@ services:
     container_name: ytnm-frontend
     ports:
       - "80:80"
-      - "443:443"
-    volumes:
-      - /etc/letsencrypt:/etc/letsencrypt:ro
     depends_on:
       - backend
+    networks:
+      - ytnm-net
     restart: always
+
+networks:
+  ytnm-net:
+    driver: bridge
 
 volumes:
   pdf_output:
