@@ -207,13 +207,12 @@ def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
     return None
 
 
-# ── Strategy 3: yt-dlp with OAuth2 + cookies fallback + retry ─────────────────────
+# ── Strategy 3: yt-dlp with cookies.txt + retry ────────────────────────────────────
 def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
     url = f"https://www.youtube.com/watch?v={video_id}"
 
-    # OAuth2 cache directory (mounted from host via docker-compose)
-    oauth_cache = "/app/oauth_cache"
     cookies_path = "/app/cookies.txt"
+    use_cookies = os.path.isfile(cookies_path) and os.path.getsize(cookies_path) > 10
 
     ydl_opts = {
         "skip_download": True,
@@ -226,20 +225,11 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
         "socket_timeout": 15,
     }
 
-    # Priority 1: OAuth2 token (best — acts as a real logged-in user)
-    oauth_token_file = os.path.join(oauth_cache, "token_data.json")
-    if os.path.isfile(oauth_token_file):
-        ydl_opts["username"] = "oauth2"
-        ydl_opts["password"] = ""
-        # Point yt-dlp's cache to our mounted directory
-        ydl_opts["cachedir"] = oauth_cache
-        print(f"[Transcript] Strategy 3 (yt-dlp): Using OAuth2 token for authentication")
-    # Priority 2: Cookies file
-    elif os.path.isfile(cookies_path) and os.path.getsize(cookies_path) > 10:
+    if use_cookies:
         ydl_opts["cookiefile"] = cookies_path
         print(f"[Transcript] Strategy 3 (yt-dlp): Using cookies.txt for auth")
     else:
-        print(f"[Transcript] Strategy 3 (yt-dlp): No OAuth or cookies, trying unauthenticated")
+        print(f"[Transcript] Strategy 3 (yt-dlp): No cookies.txt found, trying without auth")
 
     # Retry up to 2 times with backoff
     for attempt in range(1, 3):
