@@ -1,0 +1,101 @@
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=Inter:wght@400;500;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    -webkit-font-smoothing: antialiased;
+    box-sizing: border-box;
+  }
+  body {
+    background-color: #f5f0e8;
+    font-family: 'Inter', sans-serif;
+    color: #1a1a1a;
+  }
+}
+
+@layer components {
+  /* Neo-Brutalist card */
+  .brutal-card {
+    @apply bg-white border-2 border-primary;
+    box-shadow: 4px 4px 0px #1a1a1a;
+    transition: box-shadow 0.15s ease, transform 0.15s ease;
+  }
+  .brutal-card:hover {
+    box-shadow: 6px 6px 0px #1a1a1a;
+    transform: translate(-1px, -1px);
+  }
+
+  /* Primary CTA button */
+  .btn-primary {
+    @apply bg-primary text-on-primary font-bold uppercase tracking-wider border-2 border-primary;
+    box-shadow: 4px 4px 0px #ffcc00;
+    transition: all 0.15s ease;
+  }
+  .btn-primary:hover {
+    @apply bg-primary-fixed text-primary;
+    box-shadow: 6px 6px 0px #1a1a1a;
+    transform: translate(-1px, -1px);
+  }
+  .btn-primary:active {
+    box-shadow: 2px 2px 0px #1a1a1a;
+    transform: translate(2px, 2px);
+  }
+
+  /* Yellow accent button */
+  .btn-yellow {
+    @apply bg-primary-fixed text-primary font-bold uppercase tracking-wider border-2 border-primary;
+    box-shadow: 4px 4px 0px #1a1a1a;
+    transition: all 0.15s ease;
+  }
+  .btn-yellow:hover {
+    box-shadow: 6px 6px 0px #1a1a1a;
+    transform: translate(-1px, -1px);
+  }
+  .btn-yellow:active {
+    box-shadow: 2px 2px 0px #1a1a1a;
+    transform: translate(2px, 2px);
+  }
+
+  /* Input — thick bottom border only (brutalist style) */
+  .brutal-input {
+    @apply w-full bg-white border-0 border-b-2 border-primary px-4 py-3 text-body-md text-on-surface placeholder:text-outline/50 outline-none;
+    transition: border-color 0.15s ease;
+  }
+  .brutal-input:focus {
+    @apply border-b-4 border-tertiary;
+  }
+
+  /* Material Symbols */
+  .material-symbols-outlined {
+    font-family: 'Material Symbols Outlined';
+    font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
+    vertical-align: middle;
+  }
+
+  /* Loading pulse */
+  .loading-pulse {
+    animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.5; }
+  }
+
+  /* Concept pill */
+  .concept-pill {
+    @apply inline-block bg-primary-fixed text-primary font-bold text-sm border-2 border-primary px-3 py-1;
+    box-shadow: 2px 2px 0px #1a1a1a;
+  }
+
+  /* Flashcard */
+  .flashcard-q {
+    @apply bg-primary text-on-primary border-2 border-primary p-3 font-bold text-body-sm;
+  }
+  .flashcard-a {
+    @apply bg-primary-fixed text-primary border-2 border-primary border-t-0 p-3 text-body-sm;
+  }
+}

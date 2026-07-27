@@ -1,0 +1,28 @@
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment — never copy into Docker
+venv/
+env/
+.venv/
+
+# Gradio artifacts
+.gradio/
+
+# Local env files (use docker-compose env_file or environment instead)
+.env
+
+# Generated PDFs (mounted as a volume in production)
+output/
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
