@@ -1,25 +1,17 @@
 # ─────────────────────────────────────────────────────────────────
 # Backend — Flask API + LangGraph + FPDF
+# Pure Python 3.11 Slim (No apt-get dependencies needed)
 # ─────────────────────────────────────────────────────────────────
 FROM python:3.11-slim
 
-# System deps: build tools for python packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        build-essential \
-        python3-dev \
-        gcc \
-        g++ \
-        libgomp1 \
-        curl \
-    && rm -rf /var/lib/apt/lists/*
-
 WORKDIR /app
 
-# Install Python dependencies
+# Install dependencies directly using pre-compiled wheels
 COPY req.txt .
-RUN pip install --no-cache-dir -r req.txt
+RUN pip install --no-cache-dir --upgrade pip \
+ && pip install --no-cache-dir -r req.txt
 
-# Copy source code
+# Copy backend source code
 COPY . .
 
 # Create output directory for generated PDFs
