@@ -194,24 +194,35 @@ def fetch_transcript_tool(url: str) -> str:
 # ──────────────────────────────────────────────
 
 _NOTES_TEMPLATE = """\
-You are an expert master educator who creates detailed, high-accuracy study notes.
-Your task is to generate comprehensive structured study notes STRICTLY based on the provided YouTube video transcript and title below.
+You are a study notes generator. Your ONLY job is to extract information from the provided YouTube video transcript and create structured notes.
 
-PRIMARY SOURCE OF TRUTH:
-The YouTube Video Transcript & Title provided under 'INPUT VIDEO CONTENT'.
+**STRICT RULES - READ CAREFULLY:**
+1. READ the VIDEO TITLE from the transcript below and use it as your "title" field
+2. READ the TRANSCRIPT carefully - every word matters
+3. Create notes ONLY from what you read in the transcript - DO NOT add outside knowledge
+4. If the video is about "Python Tutorial", write notes about what the speaker teaches in THIS video
+5. If the video is about "Machine Learning", write notes about the specific ML concepts THIS speaker explains
+6. Include specific examples, code snippets, or steps that appear in the transcript
+7. Use the speaker's teaching flow - start to finish
 
-RULES FOR NOTE GENERATION:
-1. TITLE: Set the 'title' field to match the exact topic or main title of the video.
-2. STRICT VIDEO FIDELITY: Your summary, key concepts, bullet points, and flashcards MUST accurately capture the specific ideas, explanations, steps, code, facts, and examples presented by the speaker in this video.
-3. ENRICHMENT WITHOUT HALLUCINATION: You may use your background knowledge to clarify technical terms or add definitions, but the core content MUST remain 100% focused on what is covered in the video. Do NOT write generic unrelated textbook fluff.
-4. SUMMARY: Provide a clear, comprehensive summary of the main arguments and explanations in the video.
-5. BULLET POINTS: Write detailed, actionable, self-contained bullet points covering every major section or step explained in the video.
-6. FLASHCARDS & KEY CONCEPTS: Extract the key terms defined or explained in the video and generate flashcards testing understanding of the video content.
-7. LANGUAGE: All output fields MUST be in clean, high-quality ENGLISH regardless of the video spoken language (Hindi, Hinglish, English, etc.).
+**OUTPUT FORMAT:**
+- title: Use the exact VIDEO TITLE from the transcript
+- summary: 2-3 paragraphs summarizing what THIS video covers (not generic definitions)
+- key_concepts: 5-10 terms/concepts that THIS speaker actually explains in THIS video
+- bullet_points: 15-20 notes capturing the main points from THIS video transcript
+- flashcards: 10 Q&A pairs based on what THIS video teaches
+- important_quotes: Any notable statements from THIS speaker (if any)
 
-INPUT VIDEO CONTENT:
+**EXAMPLE - GOOD vs BAD:**
+❌ BAD (generic): "Python is a programming language. Variables store data. Functions perform tasks."
+✅ GOOD (video-specific): "The speaker explains Python basics starting with print() function. Shows example: print('Hello'). Then demonstrates variables: x = 5, name = 'John'. Explains that Python is dynamically typed."
+
+**THE VIDEO TRANSCRIPT IS BELOW:**
+---
 {transcript}
-"""
+---
+
+NOW GENERATE NOTES FROM THIS SPECIFIC VIDEO TRANSCRIPT ONLY. DO NOT USE EXTERNAL KNOWLEDGE."""
 
 def build_notes_chain(llm=None, instructions: str = ""):
     if llm is None:
@@ -236,10 +247,70 @@ def build_notes_chain(llm=None, instructions: str = ""):
 # 4.  LangGraph Nodes
 # ──────────────────────────────────────────────
 
+MAX_TRANSCRIPT_LENGTH = 12000  # ~3000 tokens for context limit
+
 def fetch_transcript_node(state: NotesState) -> NotesState:
+    """Node 1: fetch exact video transcript from YouTube with safe dynamic truncation."""
     try:
-        transcript = fetch_transcript_tool.invoke({"url": state["url"]})
-        return {**state, "transcript": transcript, "error": None}
+        raw_transcript = fetch_transcript_tool.invoke({"url": state["url"]})
+        
+        # Debug: Print raw transcript length and preview
+        print(f"\n{'='*60}")
+        print(f"[DEBUG] Transcript fetched: {len(raw_transcript)} characters")
+        print(f"[DEBUG] First 300 chars:\n{raw_transcript[:300]}")
+        print(f"{'='*60}\n")
+        
+        # If total length is within limit, return unchanged
+        if len(raw_transcript) <= MAX_TRANSCRIPT_LENGTH:
+            return {**state, "transcript": raw_transcript, "error": None}
+
+        # --- Fix: Dynamic Header vs Body Separation ---
+        lines = raw_transcript.split('\n')
+        header_lines = []
+        body_start_index = 0
+
+        # Dynamically locate header lines (TITLE, SPEAKER, TRANSCRIPT: label)
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if any(k in stripped for k in ['VIDEO TITLE:', 'SPEAKER / CHANNEL:', 'TRANSCRIPT LANGUAGE:', 'VIDEO ID:', 'DESCRIPTION:']):
+                header_lines.append(line)
+                body_start_index = i + 1
+            elif stripped in ['TRANSCRIPT:', 'FULL VERBATIM TRANSCRIPT:']:
+                header_lines.append(line)
+                body_start_index = i + 1
+                break  # Stop header scan after TRANSCRIPT label
+            elif i >= 10:
+                # Safety cap: don't scan past first 10 lines for header
+                break
+
+        header_str = '\n'.join(header_lines) if header_lines else ""
+        transcript_body = '\n'.join(lines[body_start_index:]).strip()
+
+        # Fallback: if body separation failed, treat whole raw string as body
+        if not transcript_body:
+            transcript_body = raw_transcript
+            header_str = ""
+
+        # Calculate remaining character budget for transcript body
+        header_len = len(header_str)
+        available_body_budget = max(1000, MAX_TRANSCRIPT_LENGTH - header_len - 150)
+        
+        # Truncate body from the END (keeping the crucial beginning)
+        truncated_body = transcript_body[:available_body_budget]
+        cut_chars = max(0, len(transcript_body) - len(truncated_body))
+
+        print(f"⚠️  [Transcript Node] Truncation Applied:")
+        print(f"    - Kept header: {header_len} chars")
+        print(f"    - Kept body:   {len(truncated_body)} chars")
+        print(f"    - Cut off:     {cut_chars} chars from end")
+
+        final_transcript = (
+            (header_str + "\n\n" if header_str else "")
+            + truncated_body
+            + (f"\n\n[...transcript truncated for length ({cut_chars} characters cut)...]" if cut_chars > 0 else "")
+        )
+
+        return {**state, "transcript": final_transcript, "error": None}
     except Exception as e:
         return {**state, "transcript": "", "error": f"Transcript error: {e}"}
 
@@ -249,10 +320,26 @@ def generate_notes_node(state: NotesState) -> NotesState:
         return state
 
     try:
+        print(f"\n{'='*60}")
+        print(f"[DEBUG] Calling LLM with transcript ({len(state['transcript'])} chars)...")
+        print(f"{'='*60}\n")
+        
         chain = build_notes_chain(instructions=state.get("instructions", ""))
         notes: NotesOutput = chain.invoke({"transcript": state["transcript"]})
+        
+        # Debug: Print generated notes preview
+        print(f"\n{'='*60}")
+        print(f"[DEBUG] LLM Generated Notes:")
+        print(f"  Title: {notes.title}")
+        print(f"  Summary (first 200 chars): {notes.summary[:200]}...")
+        print(f"  Key Concepts: {len(notes.key_concepts)} concepts")
+        print(f"  Bullet Points: {len(notes.bullet_points)} points")
+        print(f"  Flashcards: {len(notes.flashcards)} cards")
+        print(f"{'='*60}\n")
+        
         return {**state, "notes": notes, "error": None}
     except Exception as e:
+        print(f"❌ [ERROR] LLM generation failed: {e}")
         return {**state, "notes": None, "error": f"LLM error: {e}"}
 
 
