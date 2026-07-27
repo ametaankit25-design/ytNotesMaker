@@ -32,5 +32,6 @@ output/
 Thumbs.db
 .gradio/
 
-# YouTube cookies (never commit — contains private session data)
+# YouTube auth tokens & cookies (never commit)
 cookies.txt
+oauth_cache/

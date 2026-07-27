@@ -15,7 +15,7 @@ RUN pip install --no-cache-dir --upgrade yt-dlp
 
 COPY . .
 
-RUN mkdir -p /app/output
+RUN mkdir -p /app/output /app/oauth_cache
 # Create empty cookies.txt placeholder if not provided
 RUN touch /app/cookies.txt
 
