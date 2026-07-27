@@ -1,5 +1,6 @@
 gradio
 youtube-transcript-api
+yt-dlp
 langchain-core
 langchain-community
 langchain-text-splitters

@@ -13,6 +13,7 @@ import re
 import xml.etree.ElementTree as ET
 from typing import TypedDict, Optional
 import requests
+import yt_dlp
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import tool
@@ -38,7 +39,7 @@ class NotesState(TypedDict):
 
 
 # ──────────────────────────────────────────────
-# 2.  LangChain Tool (transcript fetching)
+# 2.  LangChain Tool (transcript fetching with yt-dlp)
 # ──────────────────────────────────────────────
 
 def _extract_video_id(url: str) -> Optional[str]:
@@ -55,100 +56,129 @@ def _extract_video_id(url: str) -> Optional[str]:
     return None
 
 
-def _fallback_direct_transcript(video_id: str) -> str:
+def _fetch_transcript_ytdlp(url: str) -> str:
     """
-    Fallback method when YouTubeTranscriptApi is blocked on Cloud IPs (AWS EC2).
-    Scrapes ytInitialPlayerResponse directly with a realistic browser User-Agent
-    to extract caption tracks XML without hitting API rate limits.
+    Primary method: Uses yt-dlp with Android/iOS client spoofing.
+    Bypasses AWS EC2 datacenter IP blocks by requesting Android/iOS API client endpoints.
     """
-    headers = {
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        ),
-        "Accept-Language": "en-US,en;q=0.9",
+    ydl_opts = {
+        'skip_download': True,
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitleslangs': ['en', 'en-US', 'en-GB', 'hi', 'hi-IN', 'all'],
+        'quiet': True,
+        'no_warnings': True,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['android', 'ios', 'web'],
+            }
+        }
     }
-    url = f"https://www.youtube.com/watch?v={video_id}"
-    resp = requests.get(url, headers=headers, timeout=10)
-    if resp.status_code != 200:
-        raise ValueError(f"Failed to load YouTube video page (status {resp.status_code})")
 
-    # Find ytInitialPlayerResponse JSON pattern
-    match = re.search(r'ytInitialPlayerResponse\s*=\s*({.+?});', resp.text)
-    if not match:
-        raise ValueError("Could not extract player response metadata from YouTube page.")
+    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        info = ydl.extract_info(url, download=False)
+        subtitles = info.get('subtitles') or {}
+        auto_subs = info.get('automatic_captions') or {}
 
-    data = json.loads(match.group(1))
-    captions = (
-        data.get("captions", {})
-            .get("playerCaptionsTracklistRenderer", {})
-            .get("captionTracks", [])
-    )
+        all_subs = {**auto_subs, **subtitles}
+        if not all_subs:
+            raise ValueError("No subtitles or captions found for this YouTube video.")
 
-    if not captions:
-        raise ValueError("No captions/subtitles found on this YouTube video.")
+        # Find best language track (English > Hindi > any)
+        chosen_lang = None
+        for lang in ['en', 'en-US', 'en-GB', 'hi', 'hi-IN']:
+            if lang in all_subs:
+                chosen_lang = lang
+                break
+        if not chosen_lang:
+            chosen_lang = list(all_subs.keys())[0]
 
-    # Pick English track or fallback to first available track
-    chosen_track = None
-    for c in captions:
-        if c.get("languageCode", "").startswith("en"):
-            chosen_track = c
-            break
-    if not chosen_track:
-        chosen_track = captions[0]
+        formats = all_subs[chosen_lang]
+        sub_url = None
+        for fmt in formats:
+            if fmt.get('ext') in ['json3', 'srv1', 'ttml', 'vtt']:
+                sub_url = fmt.get('url')
+                break
+        if not sub_url and formats:
+            sub_url = formats[0].get('url')
 
-    xml_url = chosen_track.get("baseUrl")
-    if not xml_url:
-        raise ValueError("Caption track baseUrl missing.")
+        if not sub_url:
+            raise ValueError(f"Could not retrieve caption URL for language {chosen_lang}")
 
-    # Fetch timedtext XML
-    xml_resp = requests.get(xml_url, headers=headers, timeout=10)
-    root = ET.fromstring(xml_resp.text)
-    text_snippets = [elem.text for elem in root.findall(".//text") if elem.text]
-    full_text = " ".join(text_snippets)
+        headers = {
+            "User-Agent": (
+                "Mozilla/5.0 (Android 14; Mobile; rv:120.0) Gecko/120.0 Firefox/120.0"
+            )
+        }
+        resp = requests.get(sub_url, headers=headers, timeout=10)
+        content = resp.text
 
-    lang = chosen_track.get("languageCode", "unknown")
-    return f"[Transcript language: {lang}]\n" + full_text
+        text_snippets = []
+        if 'json3' in sub_url or content.strip().startswith('{'):
+            data = json.loads(content)
+            for ev in data.get('events', []):
+                for s in ev.get('segs', []):
+                    t = s.get('utf8', '').strip()
+                    if t and t != '\n':
+                        text_snippets.append(t)
+        elif '<transcript>' in content or '<tt' in content:
+            root = ET.fromstring(content)
+            for elem in root.iter():
+                if elem.text and elem.text.strip():
+                    text_snippets.append(elem.text.strip())
+        else:
+            lines = content.splitlines()
+            for line in lines:
+                if '-->' not in line and not line.isdigit() and line.strip() and not line.startswith('WEBVTT'):
+                    text_snippets.append(line.strip())
+
+        full_text = " ".join(text_snippets)
+        if not full_text.strip():
+            raise ValueError("Extracted caption content was empty.")
+
+        return f"[Transcript language: {chosen_lang}]\n" + full_text
 
 
 @tool
 def fetch_transcript_tool(url: str) -> str:
     """
-    LangChain tool: fetches and returns plain-text transcript for a YouTube video.
-    Tries YouTubeTranscriptApi first, then falls back to direct browser scraping
-    to bypass AWS cloud IP blocks.
+    LangChain tool: fetches transcript for a YouTube video.
+    Uses yt-dlp Android client spoofing first (bypasses AWS IP blocks),
+    then falls back to YouTubeTranscriptApi.
     """
+    # 1. Try yt-dlp first (best for AWS EC2 / Cloud IPs)
+    try:
+        return _fetch_transcript_ytdlp(url)
+    except Exception as e1:
+        print(f"[Transcript yt-dlp Warning] {e1}. Trying YouTubeTranscriptApi fallback...")
+
+    # 2. Fallback to YouTubeTranscriptApi
     video_id = _extract_video_id(url)
     if not video_id:
         raise ValueError(f"Could not extract video ID from URL: {url}")
 
-    # Primary method: YouTubeTranscriptApi
-    try:
-        api = YouTubeTranscriptApi()
-        transcript_list = api.list(video_id)
+    api = YouTubeTranscriptApi()
+    transcript_list = api.list(video_id)
 
-        manual_en, auto_en, manual_any, auto_any = None, None, None, None
-        for t in transcript_list:
-            is_en = t.language_code.startswith('en')
-            if is_en and not t.is_generated and manual_en is None:
-                manual_en = t
-            elif is_en and t.is_generated and auto_en is None:
-                auto_en = t
-            elif not is_en and not t.is_generated and manual_any is None:
-                manual_any = t
-            elif not is_en and t.is_generated and auto_any is None:
-                auto_any = t
+    manual_en, auto_en, manual_any, auto_any = None, None, None, None
+    for t in transcript_list:
+        is_en = t.language_code.startswith('en')
+        if is_en and not t.is_generated and manual_en is None:
+            manual_en = t
+        elif is_en and t.is_generated and auto_en is None:
+            auto_en = t
+        elif not is_en and not t.is_generated and manual_any is None:
+            manual_any = t
+        elif not is_en and t.is_generated and auto_any is None:
+            auto_any = t
 
-        chosen = manual_en or auto_en or manual_any or auto_any
-        if chosen:
-            fetched = chosen.fetch()
-            text = " ".join(entry.text for entry in fetched)
-            return f"[Transcript language: {chosen.language_code}]\n" + text
-    except Exception as e:
-        print(f"[Transcript API Warning] Primary API failed ({e}). Trying browser fallback...")
+    chosen = manual_en or auto_en or manual_any or auto_any
+    if chosen:
+        fetched = chosen.fetch()
+        text = " ".join(entry.text for entry in fetched)
+        return f"[Transcript language: {chosen.language_code}]\n" + text
 
-    # Fallback method: Direct timedtext XML extraction with browser User-Agent
-    return _fallback_direct_transcript(video_id)
+    raise ValueError("Could not retrieve transcript from YouTube using any method.")
 
 
 # ──────────────────────────────────────────────
