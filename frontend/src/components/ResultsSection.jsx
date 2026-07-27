@@ -29,7 +29,7 @@ export default function ResultsSection({ results }) {
   return (
     <div className="w-full space-y-4">
       {/* Title banner */}
-      <div className="bg-primary-fixed border-2 border-primary p-4" style={{ boxShadow: '4px 4px 0px #1a1a1a' }}>
+      <div className="bg-primary-fixed border-2 border-primary p-4" style={{ boxShadow: '4px 4px 0px var(--shadow-color)' }}>
         <div className="flex items-start gap-2">
           <span className="material-symbols-outlined text-primary mt-0.5" style={{ fontVariationSettings: "'FILL' 1" }}>
             check_circle
@@ -64,7 +64,7 @@ export default function ResultsSection({ results }) {
               className={`flex-1 py-3 font-label font-bold text-xs uppercase tracking-wider transition-colors ${
                 activeTab === tab.id
                   ? 'bg-primary text-on-primary'
-                  : 'bg-white text-outline hover:bg-surface-container'
+                  : 'bg-surface-container-lowest text-outline hover:bg-surface-container'
               }`}
             >
               {tab.label}
@@ -73,7 +73,7 @@ export default function ResultsSection({ results }) {
         </div>
 
         {/* Tab content */}
-        <div className="p-4 bg-white">
+        <div className="p-4 bg-surface-container-lowest">
           {/* Summary */}
           {activeTab === 'summary' && (
             <div className="space-y-3">

@@ -44,7 +44,18 @@ fi
 
 sudo usermod -aG docker $USER
 
+echo "=== 4/4 Preparing project files ==="
+# cookies.txt must exist before docker compose (bind-mount creates a dir if missing)
+mkdir -p oauth_cache
+touch cookies.txt
+
 echo "=== 3/3 Setup Complete! ==="
 docker --version
 docker compose version || docker-compose --version
 free -h
+echo ""
+echo "Next steps:"
+echo "  1. cd $(pwd)"
+echo "  2. nano .env          # add GROQ_API_KEY=gsk_..."
+echo "  3. Upload cookies.txt # see DEPLOYMENT.md (required on EC2 for YouTube)"
+echo "  4. ./scripts/deploy-ec2.sh"

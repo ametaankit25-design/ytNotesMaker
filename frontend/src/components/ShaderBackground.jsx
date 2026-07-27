@@ -14,9 +14,10 @@ varying vec2 v_texCoord;
 uniform float u_time;
 uniform vec2 u_resolution;
 uniform vec2 u_mouse;
+uniform float u_dark;
 
 vec3 mod289(vec3 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
-vec2 mod289(vec2 x) { return x - floor(x * (1.0 / 289.0)) * 289.0; }
+vec2 mod289(vec2 v) { return v - floor(v * (1.0 / 289.0)) * 289.0; }
 vec3 permute(vec3 x) { return mod289(((x*34.0)+1.0)*x); }
 
 float snoise(vec2 v) {
@@ -40,8 +41,12 @@ float snoise(vec2 v) {
 void main() {
   vec2 uv = v_texCoord;
   vec2 mouse = u_mouse / u_resolution;
-  vec3 color1 = vec3(0.96, 0.94, 0.91);
-  vec3 color2 = vec3(1.0, 0.80, 0.0);
+  vec3 light1 = vec3(0.96, 0.94, 0.91);
+  vec3 light2 = vec3(1.0, 0.80, 0.0);
+  vec3 dark1  = vec3(0.07, 0.07, 0.07);
+  vec3 dark2  = vec3(0.35, 0.28, 0.0);
+  vec3 color1 = mix(light1, dark1, u_dark);
+  vec3 color2 = mix(light2, dark2, u_dark);
   float noise1 = snoise(uv * 2.0 + u_time * 0.08) * 0.5 + 0.5;
   float noise2 = snoise(uv * 4.0 - u_time * 0.12 + mouse * 2.0) * 0.5 + 0.5;
   float dist = distance(uv, mouse);
@@ -51,8 +56,13 @@ void main() {
   gl_FragColor = vec4(finalColor, 1.0);
 }`
 
-export default function ShaderBackground() {
+export default function ShaderBackground({ isDark = false }) {
   const canvasRef = useRef(null)
+  const darkRef = useRef(isDark ? 1 : 0)
+
+  useEffect(() => {
+    darkRef.current = isDark ? 1 : 0
+  }, [isDark])
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -77,9 +87,7 @@ export default function ShaderBackground() {
       const s = gl.createShader(type)
       gl.shaderSource(s, src)
       gl.compileShader(s)
-      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-        return null
-      }
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) return null
       return s
     }
 
@@ -91,11 +99,7 @@ export default function ShaderBackground() {
     gl.attachShader(prog, vsShader)
     gl.attachShader(prog, fsShader)
     gl.linkProgram(prog)
-
-    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
-      return
-    }
-
+    if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) return
     gl.useProgram(prog)
 
     const buf = gl.createBuffer()
@@ -103,13 +107,13 @@ export default function ShaderBackground() {
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, 1,1]), gl.STATIC_DRAW)
     const pos = gl.getAttribLocation(prog, 'a_position')
     if (pos === -1) return
-
     gl.enableVertexAttribArray(pos)
     gl.vertexAttribPointer(pos, 2, gl.FLOAT, false, 0, 0)
 
     const uTime  = gl.getUniformLocation(prog, 'u_time')
     const uRes   = gl.getUniformLocation(prog, 'u_resolution')
     const uMouse = gl.getUniformLocation(prog, 'u_mouse')
+    const uDark  = gl.getUniformLocation(prog, 'u_dark')
 
     let mouse = { x: canvas.width / 2, y: canvas.height / 2 }
     const onMouseMove = (e) => {
@@ -128,6 +132,7 @@ export default function ShaderBackground() {
       if (uTime) gl.uniform1f(uTime, t * 0.001)
       if (uRes) gl.uniform2f(uRes, canvas.width, canvas.height)
       if (uMouse) gl.uniform2f(uMouse, mouse.x, mouse.y)
+      if (uDark) gl.uniform1f(uDark, darkRef.current)
       gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4)
       raf = requestAnimationFrame(render)
     }

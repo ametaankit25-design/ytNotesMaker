@@ -79,8 +79,8 @@ export default function ProfileModal({ isOpen, initialProfile, onSave, onClose, 
               placeholder="e.g. Ankit Ameta"
               value={name}
               onChange={e => setName(e.target.value)}
-              className="w-full bg-white border-2 border-primary px-4 py-3 font-body text-sm font-bold outline-none focus:border-tertiary"
-              style={{ boxShadow: '2px 2px 0px #1a1a1a' }}
+              className="w-full bg-surface-container-lowest border-2 border-primary px-4 py-3 font-body text-sm font-bold text-on-surface outline-none focus:border-tertiary"
+              style={{ boxShadow: '2px 2px 0px var(--shadow-color)' }}
             />
           </div>
 
@@ -95,10 +95,10 @@ export default function ProfileModal({ isOpen, initialProfile, onSave, onClose, 
                   key={opt.id}
                   className={`flex items-center gap-3 p-3 border-2 border-primary cursor-pointer transition-all ${
                     education === opt.label
-                      ? 'bg-primary-fixed text-primary font-bold'
-                      : 'bg-white text-on-surface hover:bg-surface-container'
+                      ? 'bg-primary-fixed text-on-primary-fixed font-bold'
+                      : 'bg-surface-container-lowest text-on-surface hover:bg-surface-container'
                   }`}
-                  style={{ boxShadow: '2px 2px 0px #1a1a1a' }}
+                  style={{ boxShadow: '2px 2px 0px var(--shadow-color)' }}
                 >
                   <input
                     type="radio"

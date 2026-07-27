@@ -60,12 +60,11 @@ Clone the repository and run the setup script:
 git clone https://github.com/ametaankit25-design/ytNotesMaker.git
 cd ytnotesmaker
 
-# Run automated setup (Configures 4GB Swap + Installs Docker)
-chmod +x scripts/setup-aws-ec2.sh
+# Run automated setup (4GB Swap + Docker + cookies placeholder)
+chmod +x scripts/setup-aws-ec2.sh scripts/deploy-ec2.sh
 ./scripts/setup-aws-ec2.sh
 
 # Apply docker group permissions
-sudo usermod -aG docker $USER
 newgrp docker
 ```
 
@@ -87,21 +86,67 @@ GROQ_API_KEY=gsk_your_groq_api_key_here
 
 ---
 
-### Step 4: Start Docker Containers
+### Step 4: YouTube cookies (required on EC2)
 
-Launch all services:
+EC2 uses a **datacenter IP**. YouTube often blocks transcript APIs without browser cookies.
+
+**On your laptop (Chrome/Firefox):**
+
+1. Install extension **"Get cookies.txt LOCALLY"** (Chrome Web Store)
+2. Open a **private/incognito** window → go to [youtube.com](https://youtube.com) and sign in
+3. Export cookies → save as `cookies.txt` (Netscape format)
+
+**Upload to EC2:**
+
 ```bash
+# From your laptop (replace paths/IPs):
+scp -i /path/to/your-key.pem cookies.txt ubuntu@<YOUR_EC2_PUBLIC_IP>:~/ytnotesmaker/cookies.txt
+```
+
+**Or create empty file first, then paste on EC2:**
+
+```bash
+touch cookies.txt
+nano cookies.txt   # paste exported cookie file contents
+```
+
+Without valid cookies, the app tries fallback strategies (`pytubefix`, `captionTracks`, yt-dlp `tv_embedded`), but results are not guaranteed on EC2.
+
+---
+
+### Step 5: Start Docker Containers
+
+```bash
+chmod +x scripts/deploy-ec2.sh
+./scripts/deploy-ec2.sh
+```
+
+Or manually:
+
+```bash
+touch cookies.txt
+mkdir -p oauth_cache
 docker compose up -d --build
 ```
 
-Check status:
+**Test transcript extraction on EC2:**
+
 ```bash
-docker compose ps
+docker compose exec backend python test_transcript.py \
+  "https://www.youtube.com/watch?v=rfscVS0vtbw"
+```
+
+Expected: `SUCCESS` with 200K+ characters and `VIDEO TITLE:` in output.
+
+Check backend logs for strategy used:
+
+```bash
+docker compose logs backend | grep Transcript
 ```
 
 ---
 
-### Step 5: Access Your App
+### Step 6: Access Your App
 
 Open your web browser and visit:
 ```
@@ -117,4 +162,24 @@ http://<YOUR_EC2_PUBLIC_IP>
 | View live logs | `docker compose logs -f` |
 | Check memory & swap usage | `free -h` |
 | Restart all containers | `docker compose restart` |
+| Test YouTube transcript on EC2 | `docker compose exec backend python test_transcript.py` |
+| Re-deploy after git pull | `./scripts/deploy-ec2.sh` |
 | Stop all containers | `docker compose down` |
+
+---
+
+## YouTube on EC2 — Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `Live transcript unavailable (YouTube bot-detection)` | Upload valid `cookies.txt` and restart: `docker compose restart backend` |
+| `Strategy 4 (yt-dlp) ... Sign in to confirm you're not a bot` | Same — export fresh cookies from incognito browser session |
+| Empty PDF / generic notes | Check transcript test above; add `GROQ_API_KEY` to `.env` |
+| Container won't start | Ensure `touch cookies.txt` exists before `docker compose up` |
+
+Transcript fetch order in `backend/chains.py`:
+
+1. **pytubefix** (ANDROID_VR / TV clients)
+2. **captionTracks** scrape (no PO token)
+3. **youtube-transcript-api**
+4. **yt-dlp** with PO-token-free clients + cookies

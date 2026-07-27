@@ -5,78 +5,137 @@
 @tailwind components;
 @tailwind utilities;
 
+:root {
+  --color-primary: 26 26 26;
+  --color-primary-fixed: 255 204 0;
+  --color-primary-fixed-dim: 230 184 0;
+  --color-on-primary: 255 255 255;
+  --color-on-primary-fixed: 26 26 26;
+  --color-secondary: 230 59 46;
+  --color-secondary-container: 255 218 214;
+  --color-on-secondary: 26 26 26;
+  --color-tertiary: 0 85 255;
+  --color-tertiary-container: 214 227 255;
+  --color-background: 245 240 232;
+  --color-surface: 245 240 232;
+  --color-surface-dim: 214 209 201;
+  --color-surface-bright: 250 247 242;
+  --color-surface-lowest: 255 255 255;
+  --color-surface-low: 242 237 229;
+  --color-surface-container: 238 233 224;
+  --color-surface-high: 232 227 218;
+  --color-surface-highest: 226 221 212;
+  --color-surface-variant: 232 227 218;
+  --color-on-surface: 26 26 26;
+  --color-on-surface-variant: 74 74 74;
+  --color-inverse-surface: 26 26 26;
+  --color-inverse-on-surface: 245 240 232;
+  --color-outline: 26 26 26;
+  --color-outline-variant: 208 203 195;
+  --color-error-container: 255 218 214;
+  --color-on-error-container: 147 0 10;
+  --shadow-color: #1a1a1a;
+}
+
+.dark {
+  --color-primary: 245 240 232;
+  --color-primary-fixed: 255 204 0;
+  --color-primary-fixed-dim: 230 184 0;
+  --color-on-primary: 18 18 18;
+  --color-on-primary-fixed: 18 18 18;
+  --color-secondary: 255 107 97;
+  --color-secondary-container: 90 30 28;
+  --color-on-secondary: 245 240 232;
+  --color-tertiary: 102 153 255;
+  --color-tertiary-container: 20 40 90;
+  --color-background: 18 18 18;
+  --color-surface: 24 24 24;
+  --color-surface-dim: 16 16 16;
+  --color-surface-bright: 36 36 36;
+  --color-surface-lowest: 14 14 14;
+  --color-surface-low: 28 28 28;
+  --color-surface-container: 32 32 32;
+  --color-surface-high: 40 40 40;
+  --color-surface-highest: 48 48 48;
+  --color-surface-variant: 40 40 40;
+  --color-on-surface: 245 240 232;
+  --color-on-surface-variant: 180 175 168;
+  --color-inverse-surface: 245 240 232;
+  --color-inverse-on-surface: 18 18 18;
+  --color-outline: 245 240 232;
+  --color-outline-variant: 70 70 70;
+  --color-error-container: 74 20 20;
+  --color-on-error-container: 255 200 200;
+  --shadow-color: #ffcc00;
+}
+
 @layer base {
   * {
     -webkit-font-smoothing: antialiased;
     box-sizing: border-box;
   }
   body {
-    background-color: #f5f0e8;
+    background-color: rgb(var(--color-background));
     font-family: 'Inter', sans-serif;
-    color: #1a1a1a;
+    color: rgb(var(--color-on-surface));
+    transition: background-color 0.2s ease, color 0.2s ease;
   }
 }
 
 @layer components {
-  /* Neo-Brutalist card */
   .brutal-card {
-    @apply bg-white border-2 border-primary;
-    box-shadow: 4px 4px 0px #1a1a1a;
-    transition: box-shadow 0.15s ease, transform 0.15s ease;
+    @apply bg-surface-container-lowest border-2 border-primary;
+    box-shadow: 4px 4px 0px var(--shadow-color);
+    transition: box-shadow 0.15s ease, transform 0.15s ease, background-color 0.2s ease;
   }
   .brutal-card:hover {
-    box-shadow: 6px 6px 0px #1a1a1a;
+    box-shadow: 6px 6px 0px var(--shadow-color);
     transform: translate(-1px, -1px);
   }
 
-  /* Primary CTA button */
   .btn-primary {
     @apply bg-primary text-on-primary font-bold uppercase tracking-wider border-2 border-primary;
     box-shadow: 4px 4px 0px #ffcc00;
     transition: all 0.15s ease;
   }
   .btn-primary:hover {
-    @apply bg-primary-fixed text-primary;
-    box-shadow: 6px 6px 0px #1a1a1a;
+    @apply bg-primary-fixed text-on-primary-fixed;
+    box-shadow: 6px 6px 0px var(--shadow-color);
     transform: translate(-1px, -1px);
   }
   .btn-primary:active {
-    box-shadow: 2px 2px 0px #1a1a1a;
+    box-shadow: 2px 2px 0px var(--shadow-color);
     transform: translate(2px, 2px);
   }
 
-  /* Yellow accent button */
   .btn-yellow {
-    @apply bg-primary-fixed text-primary font-bold uppercase tracking-wider border-2 border-primary;
-    box-shadow: 4px 4px 0px #1a1a1a;
+    @apply bg-primary-fixed text-on-primary-fixed font-bold uppercase tracking-wider border-2 border-primary;
+    box-shadow: 4px 4px 0px var(--shadow-color);
     transition: all 0.15s ease;
   }
   .btn-yellow:hover {
-    box-shadow: 6px 6px 0px #1a1a1a;
+    box-shadow: 6px 6px 0px var(--shadow-color);
     transform: translate(-1px, -1px);
   }
   .btn-yellow:active {
-    box-shadow: 2px 2px 0px #1a1a1a;
+    box-shadow: 2px 2px 0px var(--shadow-color);
     transform: translate(2px, 2px);
   }
 
-  /* Input — thick bottom border only (brutalist style) */
   .brutal-input {
-    @apply w-full bg-white border-0 border-b-2 border-primary px-4 py-3 text-body-md text-on-surface placeholder:text-outline/50 outline-none;
-    transition: border-color 0.15s ease;
+    @apply w-full bg-surface-container-lowest border-0 border-b-2 border-primary px-4 py-3 text-body-md text-on-surface placeholder:text-outline/50 outline-none;
+    transition: border-color 0.15s ease, background-color 0.2s ease;
   }
   .brutal-input:focus {
     @apply border-b-4 border-tertiary;
   }
 
-  /* Material Symbols */
   .material-symbols-outlined {
     font-family: 'Material Symbols Outlined';
     font-variation-settings: 'FILL' 0, 'wght' 400, 'GRAD' 0, 'opsz' 24;
     vertical-align: middle;
   }
 
-  /* Loading pulse */
   .loading-pulse {
     animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
   }
@@ -85,17 +144,15 @@
     50% { opacity: 0.5; }
   }
 
-  /* Concept pill */
   .concept-pill {
-    @apply inline-block bg-primary-fixed text-primary font-bold text-sm border-2 border-primary px-3 py-1;
-    box-shadow: 2px 2px 0px #1a1a1a;
+    @apply inline-block bg-primary-fixed text-on-primary-fixed font-bold text-sm border-2 border-primary px-3 py-1;
+    box-shadow: 2px 2px 0px var(--shadow-color);
   }
 
-  /* Flashcard */
   .flashcard-q {
     @apply bg-primary text-on-primary border-2 border-primary p-3 font-bold text-body-sm;
   }
   .flashcard-a {
-    @apply bg-primary-fixed text-primary border-2 border-primary border-t-0 p-3 text-body-sm;
+    @apply bg-primary-fixed text-on-primary-fixed border-2 border-primary border-t-0 p-3 text-body-sm;
   }
 }

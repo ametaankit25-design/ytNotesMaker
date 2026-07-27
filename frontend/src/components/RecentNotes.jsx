@@ -79,7 +79,7 @@ export default function RecentNotes({ history, onSelectNote }) {
                   onClick={e => e.stopPropagation()}
                   title={`Download ${type} PDF`}
                   className="w-7 h-7 border-2 border-primary bg-primary-fixed flex items-center justify-center hover:bg-primary hover:text-on-primary transition-colors"
-                  style={{ boxShadow: '2px 2px 0px #1a1a1a' }}
+                  style={{ boxShadow: '2px 2px 0px var(--shadow-color)' }}
                 >
                   <span className="material-symbols-outlined text-xs" style={{ fontVariationSettings: "'FILL' 1" }}>
                     download

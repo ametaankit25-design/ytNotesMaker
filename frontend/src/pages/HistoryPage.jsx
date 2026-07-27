@@ -83,7 +83,7 @@ export default function HistoryPage({ history, removeItem, clearAll }) {
 
       {/* Empty state */}
       {history.length === 0 && (
-        <div className="text-center py-16 border-2 border-dashed border-outline-variant bg-white/50">
+        <div className="text-center py-16 border-2 border-dashed border-outline-variant bg-surface-container-lowest/50">
           <span className="material-symbols-outlined text-4xl text-outline block mb-3">history</span>
           <p className="font-headline font-bold text-on-surface mb-1">No history yet</p>
           <p className="text-outline text-sm mb-4">Generate notes from a YouTube video to get started.</p>
@@ -98,7 +98,7 @@ export default function HistoryPage({ history, removeItem, clearAll }) {
 
       {/* No search results */}
       {history.length > 0 && filtered.length === 0 && (
-        <div className="text-center py-10 border-2 border-dashed border-outline-variant bg-white/50">
+        <div className="text-center py-10 border-2 border-dashed border-outline-variant bg-surface-container-lowest/50">
           <span className="material-symbols-outlined text-3xl text-outline block mb-2">search_off</span>
           <p className="text-outline text-sm">No results for "{search}"</p>
         </div>
@@ -158,8 +158,8 @@ export default function HistoryPage({ history, removeItem, clearAll }) {
                       download
                       onClick={e => e.stopPropagation()}
                       title={`Download ${type} PDF`}
-                      className="w-7 h-7 border-2 border-primary bg-white flex items-center justify-center hover:bg-primary-fixed transition-colors"
-                      style={{ boxShadow: '1px 1px 0px #1a1a1a' }}
+                      className="w-7 h-7 border-2 border-primary bg-surface-container-lowest flex items-center justify-center hover:bg-primary-fixed transition-colors"
+                      style={{ boxShadow: '1px 1px 0px var(--shadow-color)' }}
                     >
                       <span className="material-symbols-outlined text-xs" style={{ fontVariationSettings: "'FILL' 1" }}>
                         download
@@ -168,7 +168,7 @@ export default function HistoryPage({ history, removeItem, clearAll }) {
                   ))}
                   <button
                     onClick={e => { e.stopPropagation(); removeItem(item.id) }}
-                    className="w-7 h-7 border-2 border-error bg-white flex items-center justify-center hover:bg-error hover:text-on-error transition-colors"
+                    className="w-7 h-7 border-2 border-error bg-surface-container-lowest flex items-center justify-center hover:bg-error hover:text-on-error transition-colors"
                     style={{ boxShadow: '1px 1px 0px #cc0000' }}
                     title="Delete"
                   >

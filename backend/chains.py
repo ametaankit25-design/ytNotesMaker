@@ -13,10 +13,18 @@ import os
 import re
 import html
 import time
-import xml.etree.ElementTree as ET
+from http.cookiejar import MozillaCookieJar
 from typing import TypedDict, Optional
 import requests
 import yt_dlp
+
+# Fix SSL certificate verification on Windows / corporate proxies
+try:
+    import certifi
+    os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+    os.environ.setdefault("REQUESTS_CA_BUNDLE", certifi.where())
+except ImportError:
+    pass
 
 from langchain_core.prompts import PromptTemplate
 from langchain_core.tools import tool
@@ -70,21 +78,155 @@ def _clean_text(text: str) -> str:
     return re.sub(r'\s+', ' ', text).strip()
 
 
+def _resolve_cookies_path() -> Optional[str]:
+    """Locate cookies.txt for YouTube auth (Docker, project root, or env override).
+
+    Returns a *writable* copy under /tmp when the source is read-only
+    (docker :ro mounts) — yt-dlp updates the cookie file and fails with Errno 30 otherwise.
+    """
+    import shutil
+    import tempfile
+
+    backend_dir = os.path.dirname(os.path.abspath(__file__))
+    project_root = os.path.dirname(backend_dir)
+    candidates = [
+        os.environ.get("YT_COOKIES_PATH"),
+        "/app/cookies.txt",
+        os.path.join(project_root, "cookies.txt"),
+        os.path.join(backend_dir, "cookies.txt"),
+    ]
+    src = None
+    for path in candidates:
+        if path and os.path.isfile(path) and os.path.getsize(path) > 10:
+            src = path
+            break
+    if not src:
+        return None
+
+    # Always copy to a writable temp file so yt-dlp can refresh cookies
+    dest = os.path.join(tempfile.gettempdir(), "ytnotes_cookies.txt")
+    try:
+        shutil.copy2(src, dest)
+        os.chmod(dest, 0o600)
+        return dest
+    except Exception as e:
+        print(f"[Transcript] Could not copy cookies to writable path: {e}")
+        return src
+
+
+def _build_youtube_session() -> requests.Session:
+    """HTTP session with browser-like headers and optional Netscape cookies."""
+    session = requests.Session()
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+        ),
+        "Accept-Language": "en-US,en;q=0.9",
+    })
+    try:
+        import certifi
+        session.verify = certifi.where()
+    except ImportError:
+        pass
+    cookies_path = _resolve_cookies_path()
+    if cookies_path:
+        try:
+            jar = MozillaCookieJar(cookies_path)
+            jar.load(ignore_discard=True, ignore_expires=True)
+            session.cookies = jar
+            print(f"[Transcript] Loaded cookies from {cookies_path}")
+        except Exception as e:
+            print(f"[Transcript] Could not load cookies ({cookies_path}): {e}")
+    return session
+
+
+def _extract_json_value(html_text: str, key: str) -> Optional[str]:
+    """Extract a JSON object or array value for a given key from embedded page JSON."""
+    marker = f'"{key}":'
+    idx = html_text.find(marker)
+    if idx == -1:
+        return None
+    start = idx + len(marker)
+    while start < len(html_text) and html_text[start] in " \t\n":
+        start += 1
+    if start >= len(html_text) or html_text[start] not in "[{":
+        return None
+    open_ch, close_ch = ("[", "]") if html_text[start] == "[" else ("{", "}")
+    depth = 0
+    for i in range(start, len(html_text)):
+        ch = html_text[i]
+        if ch == open_ch:
+            depth += 1
+        elif ch == close_ch:
+            depth -= 1
+            if depth == 0:
+                return html_text[start : i + 1]
+    return None
+
+
+def _extract_json_array(html_text: str, key: str) -> Optional[str]:
+    """Extract a JSON array value for a given key from embedded page JSON."""
+    value = _extract_json_value(html_text, key)
+    return value if value and value.startswith("[") else None
+
+
+def _parse_page_metadata(html_text: str) -> tuple[str, str]:
+    """Extract video title and channel from watch-page HTML."""
+    title = uploader = ""
+    player_json = _extract_json_value(html_text, "videoDetails")
+    if player_json:
+        try:
+            vd = json.loads(player_json)
+            if isinstance(vd, dict):
+                title = vd.get("title", "") or title
+                uploader = vd.get("author", "") or uploader
+        except Exception:
+            pass
+    if not title:
+        m = re.search(r'<meta\s+name="title"\s+content="([^"]+)"', html_text)
+        if m:
+            title = html.unescape(m.group(1))
+    if not uploader:
+        m = re.search(r'<link\s+itemprop="name"\s+content="([^"]+)"', html_text)
+        if m:
+            uploader = html.unescape(m.group(1))
+    return title, uploader
+
+
+def _parse_json3_captions(content: str) -> str:
+    """Turn json3 / vtt caption payloads into plain transcript text."""
+    snippets = []
+    try:
+        jdata = json.loads(content)
+        for ev in jdata.get("events", []):
+            for s in ev.get("segs", []):
+                t = _clean_text(s.get("utf8", ""))
+                if t:
+                    snippets.append(t)
+    except Exception:
+        for line in content.splitlines():
+            c = _clean_text(line)
+            if c and not c.isdigit() and "-->" not in c and not c.startswith("WEBVTT"):
+                snippets.append(c)
+    return " ".join(snippets).strip()
+
+
 # ──────────────────────────────────────────────
 # 3.  Transcript Strategies
 # ──────────────────────────────────────────────
 
-# ── Strategy 1: pytubefix (Modern active engine with auto bot-bypass) ───────────────
+# ── Strategy 1: pytubefix (PO-token-aware client rotation) ────────────────────────
 def _fetch_via_pytubefix(video_id: str) -> tuple[Optional[str], str, str, str]:
     """
-    Uses pytubefix library — active pytube fork with built-in PO Token generator
-    and client rotation (WEB/IOS/ANDROID) to bypass bot detection automatically.
-    Returns (transcript_text, title, uploader, description).
+    Uses pytubefix with clients that avoid PO-token requirements first, then
+    falls back to token-capable clients. Returns (transcript, title, uploader, description).
     """
     title = uploader = description = ""
     url = f"https://www.youtube.com/watch?v={video_id}"
 
-    for client_type in ['WEB', 'IOS', 'MWEB', 'ANDROID']:
+    # PO-token-free clients first, then fallbacks (per yt-dlp wiki).
+    for client_type in ["ANDROID_VR", "TV", "TV_EMBED", "WEB_EMBED", "MWEB", "WEB_SAFARI", "IOS", "ANDROID", "WEB"]:
         try:
             from pytubefix import YouTube
             yt = YouTube(url, client=client_type)
@@ -124,7 +266,65 @@ def _fetch_via_pytubefix(video_id: str) -> tuple[Optional[str], str, str, str]:
     return None, title, uploader, description
 
 
-# ── Strategy 2: youtube-transcript-api v1.x (from Manual-tool-calling-agent notebook) ──
+# ── Strategy 2: captionTracks scrape (no player API / PO token) ───────────────────
+def _fetch_via_caption_tracks(video_id: str) -> tuple[Optional[str], str, str]:
+    """
+    Scrape captionTracks from the public watch page. Avoids yt-dlp player API and
+    PO-token requirements, so it works on datacenter IPs when the page loads.
+    Returns (transcript, title, uploader).
+    """
+    url = f"https://www.youtube.com/watch?v={video_id}"
+    session = _build_youtube_session()
+    try:
+        resp = session.get(url, timeout=20)
+        resp.raise_for_status()
+    except Exception as e:
+        print(f"[Transcript] Strategy 2 (captionTracks) page fetch failed: {e}")
+        return None, "", ""
+
+    title, uploader = _parse_page_metadata(resp.text)
+    tracks_json = _extract_json_array(resp.text, "captionTracks")
+    if not tracks_json:
+        print(f"[Transcript] Strategy 2 (captionTracks): No captionTracks in page for {video_id}")
+        return None, title, uploader
+
+    try:
+        tracks = json.loads(tracks_json)
+    except Exception as e:
+        print(f"[Transcript] Strategy 2 (captionTracks): JSON parse error: {e}")
+        return None, title, uploader
+
+    preferred_langs = ["en", "en-US", "en-GB", "hi", "hi-IN"]
+    chosen = None
+    for lang in preferred_langs:
+        chosen = next((t for t in tracks if t.get("languageCode") == lang), None)
+        if chosen:
+            break
+    if not chosen and tracks:
+        chosen = tracks[0]
+
+    if not chosen or not chosen.get("baseUrl"):
+        return None, title, uploader
+
+    cap_url = chosen["baseUrl"]
+    if "fmt=" not in cap_url:
+        cap_url += "&fmt=json3"
+
+    try:
+        cap_resp = session.get(cap_url, timeout=15)
+        cap_resp.raise_for_status()
+        text = _parse_json3_captions(cap_resp.text)
+        if text:
+            lang = chosen.get("languageCode", "?")
+            print(f"[Transcript] Strategy 2 (captionTracks) SUCCESS: {len(text)} chars, lang={lang}")
+            return text, title, uploader
+    except Exception as e:
+        print(f"[Transcript] Strategy 2 (captionTracks) caption download failed: {e}")
+
+    return None, title, uploader
+
+
+# ── Strategy 3: youtube-transcript-api v1.x ───────────────────────────────────────
 def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
     """
     Uses the v1.x API pattern: YouTubeTranscriptApi().fetch(video_id, languages=[...])
@@ -132,92 +332,140 @@ def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
     """
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
-        ytt_api = YouTubeTranscriptApi()
+        ytt_api = YouTubeTranscriptApi(http_client=_build_youtube_session())
 
-        # Try multiple language codes
         for langs in [["en"], ["en-US"], ["en-GB"], ["hi"], ["hi-IN"]]:
             try:
                 transcript = ytt_api.fetch(video_id, languages=langs)
                 text = " ".join(_clean_text(snippet.text) for snippet in transcript.snippets)
                 if text.strip():
-                    print(f"[Transcript] Strategy 2 (TranscriptAPI v1.x) SUCCESS: {len(text)} chars, lang={langs[0]}")
+                    print(f"[Transcript] Strategy 3 (TranscriptAPI) SUCCESS: {len(text)} chars, lang={langs[0]}")
                     return text
             except Exception:
                 continue
 
-        print(f"[Transcript] Strategy 2 (TranscriptAPI v1.x): No transcript found in any language")
+        print("[Transcript] Strategy 3 (TranscriptAPI): No transcript found in any language")
     except Exception as e:
-        print(f"[Transcript] Strategy 2 (TranscriptAPI v1.x) failed: {e}")
+        print(f"[Transcript] Strategy 3 (TranscriptAPI) failed: {e}")
     return None
 
 
-# ── Strategy 3: yt-dlp with cookies.txt + retry ────────────────────────────────────
+# ── Strategy 4: yt-dlp with cookies + PO-token-free client rotation ───────────────
 def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
+    import glob
+    import shutil
+    import tempfile
+
     url = f"https://www.youtube.com/watch?v={video_id}"
+    cookies_path = _resolve_cookies_path()
 
-    cookies_path = "/app/cookies.txt"
-    use_cookies = os.path.isfile(cookies_path) and os.path.getsize(cookies_path) > 10
-
-    ydl_opts = {
-        "skip_download": True,
-        "writesubtitles": True,
-        "writeautomaticsub": True,
-        "subtitleslangs": ["en", "en-US", "hi"],
-        "quiet": True,
-        "no_warnings": True,
-        "extractor_args": {"youtube": {"player_client": ["web", "ios", "android"]}},
-        "socket_timeout": 15,
-        "http_headers": {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
-        },
-    }
-
-    if use_cookies:
-        ydl_opts["cookiefile"] = cookies_path
-        print(f"[Transcript] Strategy 3 (yt-dlp): Using cookies.txt for auth ({os.path.getsize(cookies_path)} bytes)")
+    # With cookies, prefer web clients (need account session for subs on DC IPs).
+    # Without cookies, prefer PO-token-free clients.
+    if cookies_path:
+        rotations = [["web", "mweb"], ["web_safari"], ["tv"], ["ios", "android"]]
+        print(f"[Transcript] Strategy 4 (yt-dlp): Using cookies ({os.path.getsize(cookies_path)} bytes)")
     else:
-        print(f"[Transcript] Strategy 3 (yt-dlp): No cookies.txt found, trying without auth")
+        rotations = [["tv_embedded", "tv"], ["mweb", "web_safari"], ["ios", "android"], ["web"]]
+        print("[Transcript] Strategy 4 (yt-dlp): No cookies.txt — using PO-token-free clients")
 
-    # Retry up to 2 times with backoff
-    for attempt in range(1, 3):
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
-                if not all_subs:
-                    print(f"[Transcript] Strategy 3 (yt-dlp) attempt {attempt}: No subtitles found")
-                    break
-                chosen_lang = next((l for l in ["en", "en-US", "hi"] if l in all_subs), list(all_subs.keys())[0])
-                formats = all_subs[chosen_lang]
-                sub_url = next((f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1"]), None)
-                if not sub_url and formats:
-                    sub_url = formats[0].get("url")
-                if not sub_url:
-                    break
-                resp = requests.get(sub_url, headers={"User-Agent": "com.google.ios.youtube/19.29.1"}, timeout=10)
-                content = resp.text
-                snippets = []
-                try:
-                    jdata = json.loads(content)
-                    for ev in jdata.get("events", []):
-                        for s in ev.get("segs", []):
-                            t = _clean_text(s.get("utf8", ""))
-                            if t:
-                                snippets.append(t)
-                except Exception:
-                    for line in content.splitlines():
-                        c = _clean_text(line)
-                        if c and not c.isdigit() and "-->" not in c and not c.startswith("WEBVTT"):
-                            snippets.append(c)
-                text = " ".join(snippets).strip()
-                if text:
-                    print(f"[Transcript] Strategy 3 (yt-dlp+OAuth) SUCCESS on attempt {attempt}: {len(text)} chars")
+    def _read_sub_files(folder: str) -> Optional[str]:
+        paths = sorted(glob.glob(os.path.join(folder, "*")))
+        for path in paths:
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="ignore") as f:
+                    text = _parse_json3_captions(f.read())
+                if text and len(text) > 50:
                     return text
+            except Exception:
+                continue
+        return None
+
+    for attempt, clients in enumerate(rotations, start=1):
+        tmp = tempfile.mkdtemp(prefix="ytnm_subs_")
+        try:
+            ydl_opts = {
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                # Only English — wildcards like en.* trigger mass downloads → HTTP 429
+                "subtitleslangs": ["en"],
+                "subtitlesformat": "vtt",
+                "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
+                "quiet": True,
+                "no_warnings": True,
+                "socket_timeout": 25,
+                "retries": 2,
+                "ignoreerrors": True,
+                "ignore_no_formats_error": True,
+                "extractor_args": {"youtube": {"player_client": clients}},
+                "http_headers": {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            }
+            if cookies_path:
+                ydl_opts["cookiefile"] = cookies_path
+
+            info = None
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+            except Exception as e:
+                # Subtitle files may already be on disk before a later language fails
+                print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) warning: {e}")
+
+            text = _read_sub_files(tmp)
+            if text:
+                print(
+                    f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
+                    f"({clients}) via file: {len(text)} chars"
+                )
+                return text
+
+            if info:
+                all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
+                if all_subs:
+                    chosen_lang = next(
+                        (l for l in ["en", "en-US", "en-GB", "hi"] if l in all_subs),
+                        list(all_subs.keys())[0],
+                    )
+                    formats = all_subs[chosen_lang]
+                    sub_url = next(
+                        (f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1", "srv3"]),
+                        None,
+                    )
+                    if not sub_url and formats:
+                        sub_url = formats[0].get("url")
+                    if sub_url:
+                        session = _build_youtube_session()
+                        cap_resp = session.get(sub_url, timeout=15)
+                        cap_resp.raise_for_status()
+                        text = _parse_json3_captions(cap_resp.text)
+                        if text:
+                            print(
+                                f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
+                                f"({clients}) via URL: {len(text)} chars"
+                            )
+                            return text
+
+            print(
+                f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}): "
+                f"No subtitles (files in tmp: {os.listdir(tmp)})"
+            )
         except Exception as e:
-            print(f"[Transcript] Strategy 3 (yt-dlp) attempt {attempt} failed: {e}")
-            if attempt < 2:
-                time.sleep(2)
+            err = str(e)
+            print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) failed: {err}")
+            if "bot" in err.lower() or "sign in" in err.lower():
+                print("[Transcript] Hint: export browser cookies to cookies.txt (see DEPLOYMENT.md for EC2)")
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+        if attempt < len(rotations):
+            time.sleep(2)
     return None
 
 
@@ -243,17 +491,30 @@ def fetch_transcript_tool(url: str) -> str:
     if text:
         return f"{title_header}\nTRANSCRIPT:\n{text}"
 
-    # ── Strategy 2: youtube-transcript-api ──────────────────────────────────
+    # ── Strategy 2: captionTracks scrape (bypasses yt-dlp player API / PO token) ─
+    text, cap_title, cap_uploader = _fetch_via_caption_tracks(video_id)
+    if cap_title and not title:
+        title = cap_title
+    if cap_uploader and not uploader:
+        uploader = cap_uploader
+    title_header = (
+        f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
+        if title else f"VIDEO ID: {video_id}\n"
+    )
+    if text:
+        return f"{title_header}\nTRANSCRIPT:\n{text}"
+
+    # ── Strategy 3: youtube-transcript-api ──────────────────────────────────
     text = _fetch_via_transcript_api(video_id)
     if text:
         return f"{title_header}\nTRANSCRIPT:\n{text}"
 
-    # ── Strategy 3: yt-dlp ──────────────────────────────────────────────────
+    # ── Strategy 4: yt-dlp (PO-token-free client rotation) ─────────────────
     text = _fetch_via_ytdlp(video_id)
     if text:
         return f"{title_header}\nTRANSCRIPT:\n{text}"
 
-    # ── Strategy 4: Metadata fallback ───────────────────────────────────────
+    # ── Strategy 5: Metadata fallback ───────────────────────────────────────
     print(f"[Transcript] ALL strategies failed for {video_id}. Using metadata.")
     desc_excerpt = (description or "")[:2000]
     return (

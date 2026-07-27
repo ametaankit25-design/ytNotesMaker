@@ -18,8 +18,8 @@ services:
       - "5000:5000"
     volumes:
       - pdf_output:/app/output
-      # Mount cookies.txt for yt-dlp browser auth
-      - ./cookies.txt:/app/cookies.txt:ro
+      # Mount cookies.txt for yt-dlp browser auth (rw — yt-dlp may refresh the file)
+      - ./cookies.txt:/app/cookies.txt
       # Mount oauth_cache directory for persisting YouTube OAuth token
       - ./oauth_cache:/app/oauth_cache
     networks:

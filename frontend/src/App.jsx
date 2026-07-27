@@ -10,10 +10,12 @@ import ResultsSection    from './components/ResultsSection'
 import RecentNotes       from './components/RecentNotes'
 import BottomNav         from './components/BottomNav'
 import ProfileModal      from './components/ProfileModal'
+import InstallPrompt     from './components/InstallPrompt'
 import HistoryPage       from './pages/HistoryPage'
 
 import { useHistory }    from './hooks/useHistory'
 import { useProfile }    from './hooks/useProfile'
+import { useTheme }      from './hooks/useTheme'
 
 // ── Home page ─────────────────────────────────────────────────────────────────
 function HomePage({ history, addItem, profile }) {
@@ -170,6 +172,7 @@ function HomePage({ history, addItem, profile }) {
 export default function App() {
   const { history, addItem, removeItem, clearAll } = useHistory()
   const { profile, saveProfile, hasProfile }       = useProfile()
+  const { theme, toggleTheme }                     = useTheme()
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false)
 
   // Force onboarding modal open if user hasn't set their profile yet
@@ -181,9 +184,14 @@ export default function App() {
   }
 
   return (
-    <div className="font-body text-on-surface min-h-screen">
-      <ShaderBackground />
-      <Header profile={profile} onOpenProfile={() => setIsProfileModalOpen(true)} />
+    <div className="font-body text-on-surface min-h-screen bg-background">
+      <ShaderBackground isDark={theme === 'dark'} />
+      <Header
+        profile={profile}
+        onOpenProfile={() => setIsProfileModalOpen(true)}
+        theme={theme}
+        onToggleTheme={toggleTheme}
+      />
 
       <ProfileModal
         isOpen={showModal}
@@ -216,6 +224,7 @@ export default function App() {
         />
       </Routes>
 
+      <InstallPrompt />
       <BottomNav />
     </div>
   )
