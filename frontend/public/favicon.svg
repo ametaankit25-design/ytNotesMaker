@@ -1,5 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100">
-  <rect width="100" height="100" rx="20" fill="#1a1a1a"/>
-  <rect x="15" y="15" width="70" height="70" rx="10" fill="#ffcc00" stroke="#1a1a1a" stroke-width="4"/>
-  <path d="M40 30 L70 50 L40 70 Z" fill="#e63b2e" stroke="#1a1a1a" stroke-width="3"/>
+  <!-- Outer Rounded Square with Black Border -->
+  <rect width="100" height="100" rx="22" fill="#ffcc00" stroke="#1a1a1a" stroke-width="6"/>
+  
+  <!-- Inner White Card -->
+  <rect x="18" y="18" width="64" height="64" rx="12" fill="#f5f0e8" stroke="#1a1a1a" stroke-width="4"/>
+  
+  <!-- Red YouTube Play Badge -->
+  <rect x="28" y="28" width="44" height="28" rx="6" fill="#e63b2e" stroke="#1a1a1a" stroke-width="3"/>
+  <polygon points="46,36 56,42 46,48" fill="#ffffff"/>
+  
+  <!-- Note Lines -->
+  <line x1="28" y1="64" x2="72" y2="64" stroke="#1a1a1a" stroke-width="4" stroke-linecap="round"/>
+  <line x1="28" y1="72" x2="56" y2="72" stroke="#1a1a1a" stroke-width="4" stroke-linecap="round"/>
 </svg>
