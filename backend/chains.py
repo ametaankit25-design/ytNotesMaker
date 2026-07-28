@@ -81,10 +81,52 @@ _rate_limiter = RequestRateLimiter(min_delay=2.0)
 class CookieManager:
     """Manages cookie refresh and rotation to avoid stale cookies."""
     def __init__(self):
-        self.cookie_refresh_interval = 3600  # Refresh cookies every hour
+        self.cookie_refresh_interval = 1800  # Refresh cookies every 30 minutes (reduced from 1 hour)
         self.last_refresh_time = 0
         self.lock = threading.Lock()
         self.current_cookie_path = None
+        self.cookie_validation_cache = {}  # Cache validation results
+    
+    def validate_cookies(self, cookies_path: str) -> bool:
+        """Check if cookies are valid by testing with a simple YouTube request."""
+        if cookies_path in self.cookie_validation_cache:
+            cached_result, cached_time = self.cookie_validation_cache[cookies_path]
+            # Cache validation for 5 minutes
+            if time.time() - cached_time < 300:
+                return cached_result
+        
+        try:
+            import requests
+            session = requests.Session()
+            try:
+                jar = MozillaCookieJar(cookies_path)
+                jar.load(ignore_discard=True, ignore_expires=True)
+                session.cookies = jar
+            except Exception as e:
+                print(f"[CookieManager] Failed to load cookies for validation: {e}")
+                self.cookie_validation_cache[cookies_path] = (False, time.time())
+                return False
+            
+            # Test with a simple YouTube page request
+            test_url = "https://www.youtube.com"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+            }
+            
+            try:
+                response = session.get(test_url, headers=headers, timeout=10, allow_redirects=True)
+                is_valid = response.status_code == 200 and "Sign in" not in response.text
+                self.cookie_validation_cache[cookies_path] = (is_valid, time.time())
+                print(f"[CookieManager] Cookie validation: {'VALID' if is_valid else 'INVALID'}")
+                return is_valid
+            except Exception as e:
+                print(f"[CookieManager] Cookie validation request failed: {e}")
+                self.cookie_validation_cache[cookies_path] = (False, time.time())
+                return False
+                
+        except Exception as e:
+            print(f"[CookieManager] Cookie validation error: {e}")
+            return False
     
     def get_cookies_path(self) -> Optional[str]:
         """Get a fresh cookie path, refreshing if needed."""
@@ -94,10 +136,21 @@ class CookieManager:
             
             # Refresh cookies if interval has passed
             if time_since_refresh > self.cookie_refresh_interval or self.current_cookie_path is None:
-                self.current_cookie_path = _resolve_cookies_path()
-                self.last_refresh_time = current_time
-                if self.current_cookie_path:
-                    print(f"[CookieManager] Refreshed cookies from source")
+                new_cookies_path = _resolve_cookies_path()
+                
+                # Validate new cookies if available
+                if new_cookies_path:
+                    if self.validate_cookies(new_cookies_path):
+                        self.current_cookie_path = new_cookies_path
+                        self.last_refresh_time = current_time
+                        print(f"[CookieManager] Refreshed and validated cookies")
+                    else:
+                        print(f"[CookieManager] Cookies expired or invalid, using without cookies")
+                        self.current_cookie_path = None  # Force use of no-cookies strategies
+                        self.last_refresh_time = current_time
+                else:
+                    self.current_cookie_path = None
+                    self.last_refresh_time = current_time
             
             return self.current_cookie_path
     
@@ -106,6 +159,7 @@ class CookieManager:
         with self.lock:
             self.current_cookie_path = None
             self.last_refresh_time = 0
+            self.cookie_validation_cache = {}  # Clear validation cache
             print("[CookieManager] Forced cookie refresh")
 
 # Global cookie manager instance
@@ -525,9 +579,14 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
             except Exception as e:
                 # Subtitle files may already be on disk before a later language fails
                 print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) warning: {e}")
-                # If this looks like a cookie issue, force refresh for next attempt
-                if "cookies" in str(e).lower() or "login" in str(e).lower():
+                # If this looks like a cookie issue, force refresh and switch to no-cookies mode
+                if "cookies" in str(e).lower() or "login" in str(e).lower() or "sign in" in str(e).lower():
+                    print("[Transcript] Cookie authentication failed, switching to no-cookies mode")
                     _cookie_manager.force_refresh()
+                    cookies_path = None  # Disable cookies for remaining attempts
+                    # Switch to no-cookies client rotation for remaining attempts
+                    if attempt < len(rotations):
+                        rotations = [["tv_embedded", "tv"], ["mweb", "web_safari"], ["ios", "android"], ["web"]]
 
             text = _read_sub_files(tmp)
             if text:
