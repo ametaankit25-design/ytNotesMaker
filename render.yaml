@@ -4,7 +4,7 @@ services:
     name: ytnotes-backend
     runtime: python
     plan: free
-    buildCommand: cd backend && pip install -r req.txt
+    buildCommand: pip install -r backend/req.txt
     startCommand: cd backend && python flask_api.py
     envVars:
       - key: PORT
