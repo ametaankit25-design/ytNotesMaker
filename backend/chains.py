@@ -518,15 +518,16 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
     # Without cookies, prefer PO-token-free clients.
     if cookies_path:
         # AWS EC2: Use TV/MWEB clients first - they work better with cookies on datacenter IPs
-        rotations = [["tv_embedded"], ["mweb"], ["tv"], ["android_creator"], ["ios"], ["web_safari"], ["android"], ["web"]]
+        rotations = [["tv_embedded"], ["mweb"], ["mediaconnect"], ["android_creator"], ["ios_music"], ["android_testsuite"]]
         try:
             print(f"[Transcript] Strategy 4 (yt-dlp): Using cookies ({os.path.getsize(cookies_path)} bytes)")
         except OSError:
             print("[Transcript] Strategy 4 (yt-dlp): Using cookies (path exists)")
     else:
-        # AWS EC2: Most aggressive anti-bot rotation - single client per attempt for better tracking
-        rotations = [["tv_embedded"], ["mweb"], ["tv"], ["android_testsuite"], ["android_vr"], ["mediaconnect"], ["ios"], ["android"], ["web_safari"], ["web"]]
-        print("[Transcript] Strategy 4 (yt-dlp): No cookies.txt — using aggressive anti-bot client rotation")
+        # AWS EC2: YouTube changed player - use only working clients (Jan 2026)
+        # Avoid: web, web_safari, ios, android (they trigger player response errors)
+        rotations = [["tv_embedded"], ["mweb"], ["mediaconnect"], ["android_testsuite"], ["android_vr"]]
+        print("[Transcript] Strategy 4 (yt-dlp): Using working clients only (YouTube Jan 2026 changes)")
 
     def _read_sub_files(folder: str) -> Optional[str]:
         paths = sorted(glob.glob(os.path.join(folder, "*")))
@@ -569,12 +570,13 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
                 "nocheckcertificate": False,  # Keep certificate checks
                 "prefer_insecure": False,
                 
-                # AWS EC2: Aggressive anti-bot detection bypass
+                # AWS EC2: Critical fix for "Failed to extract any player response" error (Jan 2026)
                 "extractor_args": {
                     "youtube": {
                         "player_client": clients,
-                        "skip": ["hls", "dash"],  # Skip video formats completely
-                        "player_skip": ["webpage", "configs"],  # Skip unnecessary requests
+                        "skip": ["hls", "dash", "translated_subs"],  # Skip video formats completely
+                        "player_skip": ["webpage"],  # Only skip webpage, keep configs for player
+                        "max_comments": [0],  # Disable comments extraction
                     }
                 },
                 
@@ -603,6 +605,9 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
                 # AWS EC2: Bypass geo-restrictions
                 "geo_bypass": True,
                 "geo_bypass_country": "US",
+                
+                # AWS EC2: Force IPv4 (IPv6 can cause issues on some EC2 configs)
+                "source_address": "0.0.0.0",
             }
             if cookies_path:
                 ydl_opts["cookiefile"] = cookies_path
