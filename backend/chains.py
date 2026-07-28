@@ -74,8 +74,8 @@ class RequestRateLimiter:
                 time.sleep(sleep_time)
             self.last_request_time = time.time()
 
-# Global rate limiter instance
-_rate_limiter = RequestRateLimiter(min_delay=2.0)
+# Global rate limiter instance - AWS EC2: Increased delay to avoid detection
+_rate_limiter = RequestRateLimiter(min_delay=3.0)
 
 # Cookie refresh management
 class CookieManager:
@@ -294,7 +294,8 @@ def _extract_json_value(html_text: str, key: str) -> Optional[str]:
     if start >= len(html_text) or html_text[start] not in "[{":
         return None
     open_ch, close_ch = ("[", "]") if html_text[start] == "[" else ("{", "}")
-    depth = 0
+    dept
+    h = 0
     for i in range(start, len(html_text)):
         ch = html_text[i]
         if ch == open_ch:
@@ -516,14 +517,16 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
     # With cookies, prefer web clients (need account session for subs on DC IPs).
     # Without cookies, prefer PO-token-free clients.
     if cookies_path:
-        rotations = [["web", "mweb"], ["web_safari"], ["tv"], ["ios", "android"]]
+        # AWS EC2: Use TV/MWEB clients first - they work better with cookies on datacenter IPs
+        rotations = [["tv_embedded"], ["mweb"], ["tv"], ["android_creator"], ["ios"], ["web_safari"], ["android"], ["web"]]
         try:
             print(f"[Transcript] Strategy 4 (yt-dlp): Using cookies ({os.path.getsize(cookies_path)} bytes)")
         except OSError:
             print("[Transcript] Strategy 4 (yt-dlp): Using cookies (path exists)")
     else:
-        rotations = [["tv_embedded", "tv"], ["mweb", "web_safari"], ["ios", "android"], ["web"]]
-        print("[Transcript] Strategy 4 (yt-dlp): No cookies.txt — using PO-token-free clients")
+        # AWS EC2: Most aggressive anti-bot rotation - single client per attempt for better tracking
+        rotations = [["tv_embedded"], ["mweb"], ["tv"], ["android_testsuite"], ["android_vr"], ["mediaconnect"], ["ios"], ["android"], ["web_safari"], ["web"]]
+        print("[Transcript] Strategy 4 (yt-dlp): No cookies.txt — using aggressive anti-bot client rotation")
 
     def _read_sub_files(folder: str) -> Optional[str]:
         paths = sorted(glob.glob(os.path.join(folder, "*")))
@@ -540,9 +543,11 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
         return None
 
     for attempt, clients in enumerate(rotations, start=1):
-        # Add delay between attempts to avoid rate limiting
+        # AWS EC2: Increased delay between attempts to avoid aggressive rate limiting
         if attempt > 1:
-            time.sleep(3)
+            delay = min(5 + (attempt * 2), 15)  # Progressive backoff: 5s, 7s, 9s, 11s, 13s, 15s (max)
+            print(f"[Transcript] Strategy 4: Waiting {delay}s before attempt {attempt}...")
+            time.sleep(delay)
         
         tmp = tempfile.mkdtemp(prefix="ytnm_subs_")
         try:
@@ -556,18 +561,48 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
                 "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
                 "quiet": True,
                 "no_warnings": True,
-                "socket_timeout": 30,  # Increased timeout
-                "retries": 3,  # Increased retries
+                "socket_timeout": 45,  # AWS EC2: Increased timeout for slower connections
+                "retries": 5,  # AWS EC2: More retries
+                "fragment_retries": 5,
                 "ignoreerrors": True,
                 "ignore_no_formats_error": True,
-                "extractor_args": {"youtube": {"player_client": clients}},
+                "nocheckcertificate": False,  # Keep certificate checks
+                "prefer_insecure": False,
+                
+                # AWS EC2: Aggressive anti-bot detection bypass
+                "extractor_args": {
+                    "youtube": {
+                        "player_client": clients,
+                        "skip": ["hls", "dash"],  # Skip video formats completely
+                        "player_skip": ["webpage", "configs"],  # Skip unnecessary requests
+                    }
+                },
+                
+                # AWS EC2: Real browser headers - critical for datacenter IPs
                 "http_headers": {
                     "User-Agent": (
                         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                        "(KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36"
                     ),
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
                     "Accept-Language": "en-US,en;q=0.9",
+                    "Accept-Encoding": "gzip, deflate, br",
+                    "DNT": "1",
+                    "Connection": "keep-alive",
+                    "Upgrade-Insecure-Requests": "1",
+                    "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-Mode": "navigate",
+                    "Sec-Fetch-Site": "none",
+                    "Sec-Fetch-User": "?1",
+                    "Sec-Ch-Ua": '"Google Chrome";v="123", "Not:A-Brand";v="8", "Chromium";v="123"',
+                    "Sec-Ch-Ua-Mobile": "?0",
+                    "Sec-Ch-Ua-Platform": '"Windows"',
+                    "Cache-Control": "max-age=0",
                 },
+                
+                # AWS EC2: Bypass geo-restrictions
+                "geo_bypass": True,
+                "geo_bypass_country": "US",
             }
             if cookies_path:
                 ydl_opts["cookiefile"] = cookies_path
