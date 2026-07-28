@@ -696,47 +696,104 @@ def fetch_transcript_tool(url: str) -> str:
         raise ValueError(f"Invalid YouTube URL or Video ID: {url}")
 
     print(f"\n[Transcript] Fetching for Video ID: {video_id}")
+    
+    title = uploader = description = ""
 
     # ── Strategy 1: pytubefix (PO token generator & client rotation) ────────────
-    text, title, uploader, description = _fetch_via_pytubefix(video_id)
-    title_header = (
-        f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
-        if title else f"VIDEO ID: {video_id}\n"
-    )
-    if text:
-        return f"{title_header}\nTRANSCRIPT:\n{text}"
+    try:
+        text, title, uploader, description = _fetch_via_pytubefix(video_id)
+        title_header = (
+            f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
+            if title else f"VIDEO ID: {video_id}\n"
+        )
+        if text:
+            return f"{title_header}\nTRANSCRIPT:\n{text}"
+    except Exception as e:
+        print(f"[Transcript] Strategy 1 completely failed: {e}")
 
     # ── Strategy 2: captionTracks scrape (bypasses yt-dlp player API / PO token) ─
-    text, cap_title, cap_uploader = _fetch_via_caption_tracks(video_id)
-    if cap_title and not title:
-        title = cap_title
-    if cap_uploader and not uploader:
-        uploader = cap_uploader
-    title_header = (
-        f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
-        if title else f"VIDEO ID: {video_id}\n"
-    )
-    if text:
-        return f"{title_header}\nTRANSCRIPT:\n{text}"
+    try:
+        text, cap_title, cap_uploader = _fetch_via_caption_tracks(video_id)
+        if cap_title and not title:
+            title = cap_title
+        if cap_uploader and not uploader:
+            uploader = cap_uploader
+        title_header = (
+            f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
+            if title else f"VIDEO ID: {video_id}\n"
+        )
+        if text:
+            return f"{title_header}\nTRANSCRIPT:\n{text}"
+    except Exception as e:
+        print(f"[Transcript] Strategy 2 completely failed: {e}")
 
     # ── Strategy 3: youtube-transcript-api ──────────────────────────────────
-    text = _fetch_via_transcript_api(video_id)
-    if text:
-        return f"{title_header}\nTRANSCRIPT:\n{text}"
+    try:
+        text = _fetch_via_transcript_api(video_id)
+        title_header = (
+            f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
+            if title else f"VIDEO ID: {video_id}\n"
+        )
+        if text:
+            return f"{title_header}\nTRANSCRIPT:\n{text}"
+    except Exception as e:
+        print(f"[Transcript] Strategy 3 completely failed: {e}")
 
     # ── Strategy 4: yt-dlp (PO-token-free client rotation) ─────────────────
-    text = _fetch_via_ytdlp(video_id)
-    if text:
-        return f"{title_header}\nTRANSCRIPT:\n{text}"
+    try:
+        text = _fetch_via_ytdlp(video_id)
+        title_header = (
+            f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
+            if title else f"VIDEO ID: {video_id}\n"
+        )
+        if text:
+            return f"{title_header}\nTRANSCRIPT:\n{text}"
+    except Exception as e:
+        print(f"[Transcript] Strategy 4 completely failed: {e}")
 
-    # ── Strategy 5: Metadata fallback ───────────────────────────────────────
-    print(f"[Transcript] ALL strategies failed for {video_id}. Using metadata.")
+    # ── Strategy 5: Emergency metadata scrape (last resort) ───────────────────
+    print(f"[Transcript] ALL strategies failed for {video_id}. Emergency metadata scrape...")
+    
+    if not title:
+        # Emergency: scrape title from watch page directly
+        try:
+            session = _build_youtube_session()
+            watch_url = f"https://www.youtube.com/watch?v={video_id}"
+            resp = session.get(watch_url, timeout=15)
+            
+            # Try meta tag
+            import re
+            title_match = re.search(r'<meta\s+name="title"\s+content="([^"]+)"', resp.text)
+            if title_match:
+                import html
+                title = html.unescape(title_match.group(1))
+            
+            # Try og:title
+            if not title:
+                og_match = re.search(r'<meta\s+property="og:title"\s+content="([^"]+)"', resp.text)
+                if og_match:
+                    import html
+                    title = html.unescape(og_match.group(1))
+            
+            print(f"[Transcript] Emergency scrape got title: {title}")
+        except Exception as e:
+            print(f"[Transcript] Emergency scrape failed: {e}")
+    
+    # Last resort: return minimal info and let LLM generate generic notes
+    title_header = (
+        f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
+        if title else f"VIDEO ID: {video_id}\nVIDEO URL: https://www.youtube.com/watch?v={video_id}\n"
+    )
+    
     desc_excerpt = (description or "")[:2000]
+    
     return (
         f"{title_header}\n"
-        f"NOTE: Live transcript unavailable (YouTube bot-detection on server IP).\n"
-        f"Generate notes strictly based on the VIDEO TITLE and DESCRIPTION below:\n"
-        f"VIDEO DESCRIPTION:\n{desc_excerpt}"
+        f"NOTE: Transcript unavailable (YouTube blocking server IP). "
+        f"Generate educational notes based on the video title and description.\n"
+        f"VIDEO DESCRIPTION:\n{desc_excerpt if desc_excerpt else '(No description available)'}\n\n"
+        f"Since transcript is unavailable, generate comprehensive study notes "
+        f"covering the topic indicated by the title."
     )
 
 
