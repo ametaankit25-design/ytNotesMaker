@@ -825,15 +825,21 @@ def fetch_transcript_tool(url: str) -> str:
 
     # ── Strategy 0: Direct InnerTube API (MOST RELIABLE - try first!) ──────────
     try:
+        print("[Transcript] ⚡ Trying Strategy 0: Direct InnerTube API (highest success rate)")
         text, title, uploader = _fetch_via_direct_innertube_api(video_id)
         if text:
             title_header = (
                 f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
                 if title else f"VIDEO ID: {video_id}\n"
             )
+            print(f"[Transcript] ✅ Strategy 0 SUCCESS - InnerTube API worked!")
             return f"{title_header}\nTRANSCRIPT:\n{text}"
+        else:
+            print("[Transcript] ⚠️  Strategy 0: InnerTube API returned no transcript")
     except Exception as e:
-        print(f"[Transcript] Strategy 0 (InnerTube) completely failed: {e}")
+        print(f"[Transcript] ❌ Strategy 0 (InnerTube) completely failed: {e}")
+        import traceback
+        traceback.print_exc()
 
     # ── Strategy 1: pytubefix (PO token generator & client rotation) ────────────
     try:
