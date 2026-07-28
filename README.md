@@ -51,38 +51,31 @@ AI-powered YouTube video to structured study notes converter. Extracts transcrip
    - **Environment Variables**:
      - `VITE_API_BASE_URL` = https://ytnotes-backend.onrender.com (your backend URL)
 
-## 🚀 Deployment on Vercel
+## 🚀 Deployment on Vercel (Recommended - Monorepo)
 
-### Backend (Serverless)
+**Deploy frontend + backend together on one domain!**
 
 ```bash
-# Deploy backend
-vercel
+# Install Vercel CLI
+npm install -g vercel
 
-# Add environment variable
-vercel env add GROQ_API_KEY
-# Paste your key when prompted
+# Deploy from root directory (monorepo setup)
+vercel --prod
 
-# Production deploy
+# Add environment variables
+vercel env add GROQ_API_KEY production
+# Paste your Groq API key when prompted
+
+# Redeploy with env vars
 vercel --prod
 ```
 
-You'll get URL like: `https://ytnotesmaker-backend.vercel.app`
+**Result:**
+- Frontend: `https://your-project.vercel.app/`
+- Backend API: `https://your-project.vercel.app/api/health`
+- Same domain = No CORS issues!
 
-### Frontend (Static Site)
-
-1. Update `frontend/.env.production`:
-   ```env
-   VITE_API_BASE_URL=https://ytnotesmaker-backend.vercel.app
-   ```
-
-2. Deploy:
-   ```bash
-   cd frontend
-   vercel --prod
-   ```
-
-**See `VERCEL_DEPLOYMENT.md` for detailed Vercel guide.**
+**See `DEPLOYMENT_STEPS.md` for complete guide.**
 
 ## 🔑 Environment Variables
 

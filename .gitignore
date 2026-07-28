@@ -35,3 +35,6 @@ Thumbs.db
 # YouTube auth tokens & cookies (never commit)
 cookies.txt
 oauth_cache/
+
+.vercel
+.env*
