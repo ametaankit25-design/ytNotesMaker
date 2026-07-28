@@ -1,5 +1,6 @@
 youtube-transcript-api
-yt-dlp>=2024.11.18
+yt-dlp
+pytube
 langchain-core
 langchain-community
 langchain-text-splitters
