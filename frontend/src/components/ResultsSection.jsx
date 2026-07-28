@@ -1,9 +1,17 @@
 import { useState } from 'react'
 
+// API Configuration
+const API_BASE_URL = import.meta.env.PROD 
+  ? 'https://ytnotesmaker-backend.onrender.com' 
+  : 'http://localhost:5000'
+
 function DownloadButton({ label, icon, url }) {
+  // Convert relative URL to absolute if needed
+  const absoluteUrl = url.startsWith('http') ? url : `${API_BASE_URL}${url}`
+  
   return (
     <a
-      href={url}
+      href={absoluteUrl}
       download
       className="btn-yellow flex items-center gap-2 px-4 py-3 text-sm w-full justify-center"
     >

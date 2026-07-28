@@ -17,6 +17,11 @@ import { useHistory }    from './hooks/useHistory'
 import { useProfile }    from './hooks/useProfile'
 import { useTheme }      from './hooks/useTheme'
 
+// API Configuration
+const API_BASE_URL = import.meta.env.PROD 
+  ? 'https://ytnotesmaker-backend.onrender.com' 
+  : 'http://localhost:5000'
+
 // ── Home page ─────────────────────────────────────────────────────────────────
 function HomePage({ history, addItem, profile }) {
   const [url, setUrl]                     = useState('')
@@ -49,7 +54,7 @@ function HomePage({ history, addItem, profile }) {
     const combinedInstructions = [profileContext, instructions.trim()].filter(Boolean).join(' ')
 
     try {
-      const res = await fetch('/api/generate', {
+      const res = await fetch(`${API_BASE_URL}/api/generate`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ url: url.trim(), instructions: combinedInstructions }),
