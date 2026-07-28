@@ -67,18 +67,38 @@ function HomePage({ history, addItem, profile }) {
         setError(data.error || 'Something went wrong. Please try again.')
       } else {
         setProgress(100)
+        
+        // Validate the response data structure
+        if (!data || typeof data !== 'object') {
+          throw new Error('Invalid response format from server')
+        }
+        
+        if (!data.notes || typeof data.notes !== 'object') {
+          console.error('Invalid notes structure:', data)
+          setError('Server returned invalid notes data. The transcript extraction may have failed.')
+          return
+        }
+        
         setResults(data)
 
-        addItem({
-          id:        uuid(),
-          title:     data.notes.title,
-          url:       url.trim(),
-          timestamp: new Date().toISOString(),
-          notes:     data.notes,
-          pdf_urls:  data.pdf_urls,
-        })
+        // Only add to history if we have valid notes data with a title
+        if (data.notes && data.notes.title) {
+          addItem({
+            id:        uuid(),
+            title:     data.notes.title,
+            url:       url.trim(),
+            timestamp: new Date().toISOString(),
+            notes:     data.notes,
+            pdf_urls:  data.pdf_urls,
+          })
+        } else {
+          console.warn('Received notes data without title:', data)
+          // Still show results even without title
+          setError('Notes generated but title is missing. This may indicate a transcript extraction issue.')
+        }
       }
     } catch (err) {
+      console.error('Generation error:', err)
       setError(`${err.message}`)
     } finally {
       clearInterval(tick)
