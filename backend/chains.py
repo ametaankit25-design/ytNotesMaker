@@ -1086,6 +1086,54 @@ def generate_notes_node(state: NotesState) -> NotesState:
     if state.get("error"):
         return state
     try:
+        # Dev fallback: when DEV_FAKE_LLM=1, synthesize a lightweight NotesOutput
+        # from the transcript so the frontend can be tested without a cloud LLM.
+        if os.getenv("DEV_FAKE_LLM", "0") == "1":
+            from notes_schema import NotesOutput, Flashcard
+
+            txt = (state.get("transcript") or "").strip()
+            title = "(Untitled)"
+            if txt:
+                # Try to extract a title header if present
+                m = re.search(r"VIDEO TITLE:\s*(.+)", txt)
+                if m:
+                    title = m.group(1).strip()
+                else:
+                    # fallback to first non-empty line
+                    first_line = next((l.strip() for l in txt.splitlines() if l.strip()), None)
+                    if first_line:
+                        title = first_line[:120]
+
+            summary = (txt[:800] + "...") if txt else "(No transcript available - dev fallback)"
+
+            # crude key concepts: top 5 unique words (length>5) from the transcript
+            words = re.findall(r"\b[a-zA-Z]{6,}\b", txt.lower()) if txt else []
+            freq = {}
+            for w in words:
+                freq[w] = freq.get(w, 0) + 1
+            keys = [w for w, _ in sorted(freq.items(), key=lambda kv: -kv[1])][:5]
+
+            # bullets: split summary into sentences
+            bullets = [s.strip() for s in re.split(r"(?<=[.!?])\\s+", summary) if s.strip()][:12]
+
+            # flashcards: simple Q/A from first 5 sentences
+            flashcards = []
+            sents = [s.strip() for s in re.split(r"(?<=[.!?])\\s+", txt) if s.strip()][:10]
+            for i, s in enumerate(sents[:10]):
+                q = f"What is a key point from sentence {i+1}?"
+                a = (s[:240] + "...") if len(s) > 240 else s
+                flashcards.append(Flashcard(question=q, answer=a))
+
+            notes = NotesOutput(
+                title=title,
+                summary=summary,
+                key_concepts=keys or ["example concept"],
+                bullet_points=bullets or ["(dev) summary placeholder"],
+                flashcards=flashcards or [Flashcard(question="Example?", answer="Example answer.")],
+                important_quotes=[],
+            )
+            return {**state, "notes": notes, "error": None}
+
         chain = build_notes_chain(instructions=state.get("instructions", ""))
         notes: NotesOutput = chain.invoke({"transcript": state["transcript"]})
         return {**state, "notes": notes, "error": None}
