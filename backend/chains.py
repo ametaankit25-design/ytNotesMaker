@@ -13,6 +13,9 @@ import os
 import re
 import html
 import time
+import threading
+import tempfile
+import shutil
 from http.cookiejar import MozillaCookieJar
 from typing import TypedDict, Optional
 import requests
@@ -52,6 +55,62 @@ class NotesState(TypedDict):
 # 2.  Helpers
 # ──────────────────────────────────────────────
 
+# Rate limiting and cookie management
+class RequestRateLimiter:
+    """Simple rate limiter to prevent YouTube from blocking requests."""
+    def __init__(self, min_delay: float = 2.0):
+        self.min_delay = min_delay
+        self.last_request_time = 0
+        self.lock = threading.Lock()
+    
+    def wait_if_needed(self):
+        """Wait if the minimum delay hasn't passed since the last request."""
+        with self.lock:
+            current_time = time.time()
+            time_since_last = current_time - self.last_request_time
+            if time_since_last < self.min_delay:
+                sleep_time = self.min_delay - time_since_last
+                print(f"[RateLimiter] Sleeping for {sleep_time:.2f}s to avoid rate limiting")
+                time.sleep(sleep_time)
+            self.last_request_time = time.time()
+
+# Global rate limiter instance
+_rate_limiter = RequestRateLimiter(min_delay=2.0)
+
+# Cookie refresh management
+class CookieManager:
+    """Manages cookie refresh and rotation to avoid stale cookies."""
+    def __init__(self):
+        self.cookie_refresh_interval = 3600  # Refresh cookies every hour
+        self.last_refresh_time = 0
+        self.lock = threading.Lock()
+        self.current_cookie_path = None
+    
+    def get_cookies_path(self) -> Optional[str]:
+        """Get a fresh cookie path, refreshing if needed."""
+        with self.lock:
+            current_time = time.time()
+            time_since_refresh = current_time - self.last_refresh_time
+            
+            # Refresh cookies if interval has passed
+            if time_since_refresh > self.cookie_refresh_interval or self.current_cookie_path is None:
+                self.current_cookie_path = _resolve_cookies_path()
+                self.last_refresh_time = current_time
+                if self.current_cookie_path:
+                    print(f"[CookieManager] Refreshed cookies from source")
+            
+            return self.current_cookie_path
+    
+    def force_refresh(self):
+        """Force cookie refresh on next request."""
+        with self.lock:
+            self.current_cookie_path = None
+            self.last_refresh_time = 0
+            print("[CookieManager] Forced cookie refresh")
+
+# Global cookie manager instance
+_cookie_manager = CookieManager()
+
 def _extract_video_id(url: str) -> Optional[str]:
     url = url.strip()
     patterns = [
@@ -84,9 +143,6 @@ def _resolve_cookies_path() -> Optional[str]:
     Returns a *writable* copy under /tmp when the source is read-only
     (docker :ro mounts) — yt-dlp updates the cookie file and fails with Errno 30 otherwise.
     """
-    import shutil
-    import tempfile
-
     backend_dir = os.path.dirname(os.path.abspath(__file__))
     project_root = os.path.dirname(backend_dir)
     candidates = [
@@ -124,19 +180,34 @@ def _resolve_cookies_path() -> Optional[str]:
 def _build_youtube_session() -> requests.Session:
     """HTTP session with browser-like headers and optional Netscape cookies."""
     session = requests.Session()
+    
+    # Rotate user agents to avoid 403 errors
+    user_agents = [
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+    ]
+    
+    import random
     session.headers.update({
-        "User-Agent": (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-        ),
+        "User-Agent": random.choice(user_agents),
         "Accept-Language": "en-US,en;q=0.9",
+        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+        "Accept-Encoding": "gzip, deflate, br",
+        "DNT": "1",
+        "Connection": "keep-alive",
+        "Upgrade-Insecure-Requests": "1",
     })
+    
     try:
         import certifi
         session.verify = certifi.where()
     except ImportError:
         pass
-    cookies_path = _resolve_cookies_path()
+    
+    # Use cookie manager for fresh cookies
+    cookies_path = _cookie_manager.get_cookies_path()
     if cookies_path:
         try:
             jar = MozillaCookieJar(cookies_path)
@@ -145,6 +216,8 @@ def _build_youtube_session() -> requests.Session:
             print(f"[Transcript] Loaded cookies from {cookies_path}")
         except Exception as e:
             print(f"[Transcript] Could not load cookies ({cookies_path}): {e}")
+            # Force refresh on next attempt if current cookies fail
+            _cookie_manager.force_refresh()
         finally:
             # Clean up per-request temp cookies files created by _resolve_cookies_path.
             if os.path.basename(cookies_path).startswith("ytnotes_cookies_"):
@@ -236,6 +309,9 @@ def _fetch_via_pytubefix(video_id: str) -> tuple[Optional[str], str, str, str]:
     Uses pytubefix with clients that avoid PO-token requirements first, then
     falls back to token-capable clients. Returns (transcript, title, uploader, description).
     """
+    # Apply rate limiting
+    _rate_limiter.wait_if_needed()
+    
     title = uploader = description = ""
     url = f"https://www.youtube.com/watch?v={video_id}"
 
@@ -287,6 +363,9 @@ def _fetch_via_caption_tracks(video_id: str) -> tuple[Optional[str], str, str]:
     PO-token requirements, so it works on datacenter IPs when the page loads.
     Returns (transcript, title, uploader).
     """
+    # Apply rate limiting
+    _rate_limiter.wait_if_needed()
+    
     url = f"https://www.youtube.com/watch?v={video_id}"
     session = _build_youtube_session()
     try:
@@ -344,6 +423,9 @@ def _fetch_via_transcript_api(video_id: str) -> Optional[str]:
     Uses the v1.x API pattern: YouTubeTranscriptApi().fetch(video_id, languages=[...])
     Returns transcript text joined from .snippets (not the old .get_transcript dict format).
     """
+    # Apply rate limiting
+    _rate_limiter.wait_if_needed()
+    
     try:
         from youtube_transcript_api import YouTubeTranscriptApi
         ytt_api = YouTubeTranscriptApi(http_client=_build_youtube_session())
@@ -370,8 +452,11 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
     import shutil
     import tempfile
 
+    # Apply rate limiting before making requests
+    _rate_limiter.wait_if_needed()
+
     url = f"https://www.youtube.com/watch?v={video_id}"
-    cookies_path = _resolve_cookies_path()
+    cookies_path = _cookie_manager.get_cookies_path()
     temp_cookies_path = cookies_path if cookies_path and os.path.basename(cookies_path).startswith("ytnotes_cookies_") else None
 
     # With cookies, prefer web clients (need account session for subs on DC IPs).
@@ -402,6 +487,10 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
 
     try:
         for attempt, clients in enumerate(rotations, start=1):
+            # Add delay between attempts to avoid rate limiting
+            if attempt > 1:
+                time.sleep(3)
+            
             tmp = tempfile.mkdtemp(prefix="ytnm_subs_")
             try:
                 ydl_opts = {
@@ -414,8 +503,8 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
                     "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
                     "quiet": True,
                     "no_warnings": True,
-                    "socket_timeout": 25,
-                    "retries": 2,
+                    "socket_timeout": 30,  # Increased timeout
+                    "retries": 3,  # Increased retries
                     "ignoreerrors": True,
                     "ignore_no_formats_error": True,
                     "extractor_args": {"youtube": {"player_client": clients}},
@@ -437,6 +526,9 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
                 except Exception as e:
                     # Subtitle files may already be on disk before a later language fails
                     print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) warning: {e}")
+                    # If this looks like a cookie issue, force refresh for next attempt
+                    if "cookies" in str(e).lower() or "login" in str(e).lower():
+                        _cookie_manager.force_refresh()
 
                 text = _read_sub_files(tmp)
                 if text:
@@ -481,16 +573,16 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
                 print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) failed: {err}")
                 if "bot" in err.lower() or "sign in" in err.lower():
                     print("[Transcript] Hint: export browser cookies to cookies.txt (see DEPLOYMENT.md for EC2)")
+                    # Force cookie refresh on bot detection
+                    _cookie_manager.force_refresh()
             finally:
                 shutil.rmtree(tmp, ignore_errors=True)
-            if attempt < len(rotations):
-                time.sleep(2)
-    finally:
-        if temp_cookies_path:
-            try:
-                os.unlink(temp_cookies_path)
-            except Exception:
-                pass
+                # Clean up temp cookies if we created them
+                if temp_cookies_path and os.path.exists(temp_cookies_path):
+                    try:
+                        os.unlink(temp_cookies_path)
+                    except Exception:
+                        pass
     return None
 
 
