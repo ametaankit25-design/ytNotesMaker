@@ -115,5 +115,6 @@ def health():
 
 
 if __name__ == "__main__":
-    print("Flask API running on http://0.0.0.0:5000")
-    app.run(debug=False, port=5000, host="0.0.0.0")
+    port = int(os.environ.get("PORT", 5000))
+    print(f"Flask API running on http://0.0.0.0:{port}")
+    app.run(debug=False, port=port, host="0.0.0.0")
