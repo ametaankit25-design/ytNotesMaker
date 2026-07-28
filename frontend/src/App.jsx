@@ -17,10 +17,10 @@ import { useHistory }    from './hooks/useHistory'
 import { useProfile }    from './hooks/useProfile'
 import { useTheme }      from './hooks/useTheme'
 
-// API Configuration
-const API_BASE_URL = import.meta.env.PROD 
-  ? 'https://ytnotesmaker-backend.onrender.com' 
-  : 'http://localhost:5000'
+// API Configuration - reads from .env files
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000'
+
+console.log('[Frontend] Using API:', API_BASE_URL)
 
 // ── Home page ─────────────────────────────────────────────────────────────────
 function HomePage({ history, addItem, profile }) {

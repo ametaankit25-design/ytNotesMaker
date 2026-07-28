@@ -24,7 +24,7 @@ AI-powered YouTube video to structured study notes converter. Extracts transcrip
 - fpdf2 for PDF generation
 - Groq/Gemini/OpenAI LLMs
 
-## 📦 Deployment on Render
+## 🚀 Deployment on Render
 
 ### Backend (Web Service)
 
@@ -48,11 +48,41 @@ AI-powered YouTube video to structured study notes converter. Extracts transcrip
    - **Root Directory**: `frontend`
    - **Build Command**: `npm install && npm run build`
    - **Publish Directory**: `dist`
+   - **Environment Variables**:
+     - `VITE_API_BASE_URL` = https://ytnotes-backend.onrender.com (your backend URL)
 
-4. **Update API URL** in `frontend/src/App.jsx`:
-   ```js
-   const API_BASE_URL = "https://ytnotes-backend.onrender.com";
+## 🚀 Deployment on Vercel
+
+### Backend (Serverless)
+
+```bash
+# Deploy backend
+vercel
+
+# Add environment variable
+vercel env add GROQ_API_KEY
+# Paste your key when prompted
+
+# Production deploy
+vercel --prod
+```
+
+You'll get URL like: `https://ytnotesmaker-backend.vercel.app`
+
+### Frontend (Static Site)
+
+1. Update `frontend/.env.production`:
+   ```env
+   VITE_API_BASE_URL=https://ytnotesmaker-backend.vercel.app
    ```
+
+2. Deploy:
+   ```bash
+   cd frontend
+   vercel --prod
+   ```
+
+**See `VERCEL_DEPLOYMENT.md` for detailed Vercel guide.**
 
 ## 🔑 Environment Variables
 

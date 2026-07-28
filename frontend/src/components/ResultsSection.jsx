@@ -1,9 +1,7 @@
 import { useState } from 'react'
 
-// API Configuration
-const API_BASE_URL = import.meta.env.PROD 
-  ? 'https://ytnotesmaker-backend.onrender.com' 
-  : 'http://localhost:5000'
+// API Configuration - reads from .env files
+const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5000'
 
 function DownloadButton({ label, icon, url }) {
   // Convert relative URL to absolute if needed
