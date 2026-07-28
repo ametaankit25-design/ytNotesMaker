@@ -1,0 +1,11 @@
+[phases.setup]
+nixPkgs = ["python311", "pip"]
+
+[phases.install]
+cmds = ["pip install -r req.txt"]
+
+[phases.build]
+cmds = []
+
+[start]
+cmd = "python flask_api.py"
