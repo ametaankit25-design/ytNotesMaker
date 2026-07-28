@@ -893,30 +893,18 @@ def generate_notes_node(state: NotesState) -> NotesState:
 def generate_pdfs_node(state: NotesState) -> NotesState:
     if state.get("error"):
         return state
+    
+    # AWS EC2 fix: Skip video keyframes extraction - causes bot detection issues
+    # Generate PDFs without keyframes to avoid blocking on YouTube bot-check
     try:
-        from visual_context import temporary_keyframes
-
-        url = state.get("url") or ""
-        with temporary_keyframes(url) as frames:
-            # Annotate with timestamp captions for the PDF grid
-            keyed = [
-                {
-                    "timestamp": f["timestamp"],
-                    "path": f["path"],
-                    "caption": f"t = {int(f['timestamp']) // 60:02d}:{int(f['timestamp']) % 60:02d}",
-                }
-                for f in frames
-            ]
-            print(f"[PDF] Embedding {len(keyed)} video keyframes into PDFs")
-            pdf_paths = generate_all_pdfs(state["notes"], keyframes=keyed)
+        print("[PDF] Generating PDFs (without keyframes - AWS EC2 compatible mode)...")
+        pdf_paths = generate_all_pdfs(state["notes"])
         return {**state, "pdf_paths": pdf_paths, "error": None}
     except Exception as e:
-        # Fallback: notes PDF without frames if extraction blows up mid-flight
-        try:
-            pdf_paths = generate_all_pdfs(state["notes"])
-            return {**state, "pdf_paths": pdf_paths, "error": None}
-        except Exception as e2:
-            return {**state, "pdf_paths": {}, "error": f"PDF error: {e2} (frames: {e})"}
+        print(f"[PDF ERROR] PDF generation failed: {e}")
+        import traceback
+        traceback.print_exc()
+        return {**state, "pdf_paths": {}, "error": f"PDF error: {e}"}
 
 
 # ──────────────────────────────────────────────

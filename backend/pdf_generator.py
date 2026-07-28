@@ -219,8 +219,36 @@ def generate_all_pdfs(notes: NotesOutput) -> dict:
     Generates all three PDFs and returns a dict of file paths:
         {"summary": ..., "cheatsheet": ..., "flashcards": ...}
     """
-    return {
-        "summary":    generate_summary_pdf(notes),
-        "cheatsheet": generate_cheatsheet_pdf(notes),
-        "flashcards": generate_flashcards_pdf(notes),
-    }
+    result = {}
+    
+    try:
+        print("[PDF] Generating summary PDF...")
+        result["summary"] = generate_summary_pdf(notes)
+        print(f"[PDF] Summary PDF created: {result['summary']}")
+    except Exception as e:
+        print(f"[PDF ERROR] Summary PDF failed: {e}")
+        import traceback
+        traceback.print_exc()
+        result["summary"] = None
+    
+    try:
+        print("[PDF] Generating cheatsheet PDF...")
+        result["cheatsheet"] = generate_cheatsheet_pdf(notes)
+        print(f"[PDF] Cheatsheet PDF created: {result['cheatsheet']}")
+    except Exception as e:
+        print(f"[PDF ERROR] Cheatsheet PDF failed: {e}")
+        import traceback
+        traceback.print_exc()
+        result["cheatsheet"] = None
+    
+    try:
+        print("[PDF] Generating flashcards PDF...")
+        result["flashcards"] = generate_flashcards_pdf(notes)
+        print(f"[PDF] Flashcards PDF created: {result['flashcards']}")
+    except Exception as e:
+        print(f"[PDF ERROR] Flashcards PDF failed: {e}")
+        import traceback
+        traceback.print_exc()
+        result["flashcards"] = None
+    
+    return result
