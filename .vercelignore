@@ -1,0 +1,5 @@
+# Ignore everything except the frontend application and Vercel config
+*
+!frontend/**
+!vercel.json
+!.vercelignore
