@@ -103,14 +103,21 @@ def _resolve_cookies_path() -> Optional[str]:
     if not src:
         return None
 
-    # Always copy to a writable temp file so yt-dlp can refresh cookies
-    dest = os.path.join(tempfile.gettempdir(), "ytnotes_cookies.txt")
+    # Always copy to a writable temp file so yt-dlp can refresh cookies.
+    # Use a unique temp cookie path per request to avoid concurrent write/race
+    # issues and stale shared cookie state when EC2 handles multiple fetches.
+    fd, dest = tempfile.mkstemp(prefix="ytnotes_cookies_", suffix=".txt", dir=tempfile.gettempdir())
+    os.close(fd)
     try:
         shutil.copy2(src, dest)
         os.chmod(dest, 0o600)
         return dest
     except Exception as e:
         print(f"[Transcript] Could not copy cookies to writable path: {e}")
+        try:
+            os.unlink(dest)
+        except Exception:
+            pass
         return src
 
 
@@ -138,6 +145,13 @@ def _build_youtube_session() -> requests.Session:
             print(f"[Transcript] Loaded cookies from {cookies_path}")
         except Exception as e:
             print(f"[Transcript] Could not load cookies ({cookies_path}): {e}")
+        finally:
+            # Clean up per-request temp cookies files created by _resolve_cookies_path.
+            if os.path.basename(cookies_path).startswith("ytnotes_cookies_"):
+                try:
+                    os.unlink(cookies_path)
+                except Exception:
+                    pass
     return session
 
 
@@ -358,12 +372,16 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
 
     url = f"https://www.youtube.com/watch?v={video_id}"
     cookies_path = _resolve_cookies_path()
+    temp_cookies_path = cookies_path if cookies_path and os.path.basename(cookies_path).startswith("ytnotes_cookies_") else None
 
     # With cookies, prefer web clients (need account session for subs on DC IPs).
     # Without cookies, prefer PO-token-free clients.
     if cookies_path:
         rotations = [["web", "mweb"], ["web_safari"], ["tv"], ["ios", "android"]]
-        print(f"[Transcript] Strategy 4 (yt-dlp): Using cookies ({os.path.getsize(cookies_path)} bytes)")
+        try:
+            print(f"[Transcript] Strategy 4 (yt-dlp): Using cookies ({os.path.getsize(cookies_path)} bytes)")
+        except OSError:
+            print("[Transcript] Strategy 4 (yt-dlp): Using cookies (path exists)")
     else:
         rotations = [["tv_embedded", "tv"], ["mweb", "web_safari"], ["ios", "android"], ["web"]]
         print("[Transcript] Strategy 4 (yt-dlp): No cookies.txt — using PO-token-free clients")
@@ -382,90 +400,97 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
                 continue
         return None
 
-    for attempt, clients in enumerate(rotations, start=1):
-        tmp = tempfile.mkdtemp(prefix="ytnm_subs_")
-        try:
-            ydl_opts = {
-                "skip_download": True,
-                "writesubtitles": True,
-                "writeautomaticsub": True,
-                # Only English — wildcards like en.* trigger mass downloads → HTTP 429
-                "subtitleslangs": ["en"],
-                "subtitlesformat": "vtt",
-                "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
-                "quiet": True,
-                "no_warnings": True,
-                "socket_timeout": 25,
-                "retries": 2,
-                "ignoreerrors": True,
-                "ignore_no_formats_error": True,
-                "extractor_args": {"youtube": {"player_client": clients}},
-                "http_headers": {
-                    "User-Agent": (
-                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                    ),
-                    "Accept-Language": "en-US,en;q=0.9",
-                },
-            }
-            if cookies_path:
-                ydl_opts["cookiefile"] = cookies_path
-
-            info = None
+    try:
+        for attempt, clients in enumerate(rotations, start=1):
+            tmp = tempfile.mkdtemp(prefix="ytnm_subs_")
             try:
-                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                    info = ydl.extract_info(url, download=True)
-            except Exception as e:
-                # Subtitle files may already be on disk before a later language fails
-                print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) warning: {e}")
+                ydl_opts = {
+                    "skip_download": True,
+                    "writesubtitles": True,
+                    "writeautomaticsub": True,
+                    # Only English — wildcards like en.* trigger mass downloads → HTTP 429
+                    "subtitleslangs": ["en"],
+                    "subtitlesformat": "vtt",
+                    "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
+                    "quiet": True,
+                    "no_warnings": True,
+                    "socket_timeout": 25,
+                    "retries": 2,
+                    "ignoreerrors": True,
+                    "ignore_no_formats_error": True,
+                    "extractor_args": {"youtube": {"player_client": clients}},
+                    "http_headers": {
+                        "User-Agent": (
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                        ),
+                        "Accept-Language": "en-US,en;q=0.9",
+                    },
+                }
+                if cookies_path:
+                    ydl_opts["cookiefile"] = cookies_path
 
-            text = _read_sub_files(tmp)
-            if text:
+                info = None
+                try:
+                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                        info = ydl.extract_info(url, download=True)
+                except Exception as e:
+                    # Subtitle files may already be on disk before a later language fails
+                    print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) warning: {e}")
+
+                text = _read_sub_files(tmp)
+                if text:
+                    print(
+                        f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
+                        f"({clients}) via file: {len(text)} chars"
+                    )
+                    return text
+
+                if info:
+                    all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
+                    if all_subs:
+                        chosen_lang = next(
+                            (l for l in ["en", "en-US", "en-GB", "hi"] if l in all_subs),
+                            list(all_subs.keys())[0],
+                        )
+                        formats = all_subs[chosen_lang]
+                        sub_url = next(
+                            (f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1", "srv3"]),
+                            None,
+                        )
+                        if not sub_url and formats:
+                            sub_url = formats[0].get("url")
+                        if sub_url:
+                            session = _build_youtube_session()
+                            cap_resp = session.get(sub_url, timeout=15)
+                            cap_resp.raise_for_status()
+                            text = _parse_json3_captions(cap_resp.text)
+                            if text:
+                                print(
+                                    f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
+                                    f"({clients}) via URL: {len(text)} chars"
+                                )
+                                return text
+
                 print(
-                    f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
-                    f"({clients}) via file: {len(text)} chars"
+                    f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}): "
+                    f"No subtitles (files in tmp: {os.listdir(tmp)})"
                 )
-                return text
-
-            if info:
-                all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
-                if all_subs:
-                    chosen_lang = next(
-                        (l for l in ["en", "en-US", "en-GB", "hi"] if l in all_subs),
-                        list(all_subs.keys())[0],
-                    )
-                    formats = all_subs[chosen_lang]
-                    sub_url = next(
-                        (f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1", "srv3"]),
-                        None,
-                    )
-                    if not sub_url and formats:
-                        sub_url = formats[0].get("url")
-                    if sub_url:
-                        session = _build_youtube_session()
-                        cap_resp = session.get(sub_url, timeout=15)
-                        cap_resp.raise_for_status()
-                        text = _parse_json3_captions(cap_resp.text)
-                        if text:
-                            print(
-                                f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
-                                f"({clients}) via URL: {len(text)} chars"
-                            )
-                            return text
-
-            print(
-                f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}): "
-                f"No subtitles (files in tmp: {os.listdir(tmp)})"
-            )
-        except Exception as e:
-            err = str(e)
-            print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) failed: {err}")
-            if "bot" in err.lower() or "sign in" in err.lower():
-                print("[Transcript] Hint: export browser cookies to cookies.txt (see DEPLOYMENT.md for EC2)")
-        finally:
-            shutil.rmtree(tmp, ignore_errors=True)
-        if attempt < len(rotations):
-            time.sleep(2)
+            except Exception as e:
+                err = str(e)
+                print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) failed: {err}")
+                if "bot" in err.lower() or "sign in" in err.lower():
+                    print("[Transcript] Hint: export browser cookies to cookies.txt (see DEPLOYMENT.md for EC2)")
+            finally:
+                shutil.rmtree(tmp, ignore_errors=True)
+            if attempt < len(rotations):
+                time.sleep(2)
+    finally:
+        if temp_cookies_path:
+            try:
+                os.unlink(temp_cookies_path)
+            except Exception:
+                pass
     return None
 
 
@@ -530,20 +555,61 @@ def fetch_transcript_tool(url: str) -> str:
 # ──────────────────────────────────────────────
 
 _NOTES_TEMPLATE = """\
-You are an expert master educator who creates detailed, high-accuracy study notes.
-Your task is to generate comprehensive structured study notes STRICTLY based on the provided YouTube video transcript and title below.
+You are an expert educator and technical note-taker. Your job is to convert a raw YouTube \
+transcript into accurate, structured study notes — grounded STRICTLY in what the speaker \
+actually said.
 
-PRIMARY SOURCE OF TRUTH:
-The YouTube Video Transcript & Title provided under 'INPUT VIDEO CONTENT'.
+═══════════════════════════════
+PRIMARY SOURCE OF TRUTH
+═══════════════════════════════
+The transcript and title under 'INPUT VIDEO CONTENT' below. If the transcript is noisy, \
+auto-generated, or code-switches between Hindi/English (Hinglish), still extract the intended \
+meaning — do not skip sections just because the phrasing is informal or broken.
 
-RULES FOR NOTE GENERATION:
-1. TITLE: Set the 'title' field to match the exact topic or main title of the video.
-2. STRICT VIDEO FIDELITY: Your summary, key concepts, bullet points, and flashcards MUST accurately capture the specific ideas, explanations, steps, code, facts, and examples presented by the speaker in this video.
-3. ENRICHMENT WITHOUT HALLUCINATION: You may use your background knowledge to clarify technical terms or add definitions, but the core content MUST remain 100% focused on what is covered in the video. Do NOT write generic unrelated textbook fluff.
-4. SUMMARY: Provide a clear, comprehensive summary of the main arguments and explanations in the video.
-5. BULLET POINTS: Write detailed, actionable, self-contained bullet points covering every major section or step explained in the video.
-6. FLASHCARDS & KEY CONCEPTS: Extract the key terms defined or explained in the video and generate flashcards testing understanding of the video content.
-7. LANGUAGE: All output fields MUST be in clean, high-quality ENGLISH regardless of the video spoken language (Hindi, Hinglish, English, etc.).
+═══════════════════════════════
+RULES
+═══════════════════════════════
+1. TITLE: Use the video's exact stated topic/title. If no explicit title is given, infer a \
+   precise one from the first 2-3 minutes of content — never a generic placeholder.
+
+2. GROUNDING (STRICT): Every summary line, bullet, and flashcard must trace back to something \
+   actually said or shown (explanation, code, example, step, claim). If the transcript doesn't \
+   cover a sub-topic, do not fill the gap with generic textbook content.
+
+3. ENRICHMENT (LIMITED): You may add a one-line definition/clarification for a technical term \
+   the speaker uses but doesn't define — mark these clearly as "(clarification)" so they're never \
+   confused with something the speaker said.
+
+4. HANDLING GAPS: If the transcript is cut off, has missing audio, or a section is unintelligible, \
+   note it explicitly (e.g. "[transcript unclear here]") instead of inventing content to bridge it.
+
+5. CODE & STEPS: If the video shows code, commands, or a sequence of steps, preserve them verbatim \
+   in order — don't paraphrase code, don't merge or reorder steps.
+
+6. SUMMARY: 150-250 words, covering the video's core argument/goal, method, and outcome — written \
+   so someone who hasn't watched it understands what it covers and why it matters.
+
+7. BULLET POINTS: One bullet per major section/step, self-contained (understandable without reading \
+   other bullets), action-oriented where the video is instructional.
+
+8. KEY CONCEPTS & FLASHCARDS: Extract only terms the speaker explicitly defines or explains. Each \
+   flashcard = {{"question": ..., "answer": ...}}, answer grounded in the video's own explanation, \
+   not a textbook definition unless the video's explanation was themselves generic.
+
+9. REASONING (INTERNAL): Before writing final output, silently map out the video's structure \
+   (intro → sections → conclusion) so bullets/flashcards follow the video's actual flow. Do NOT \
+   include this scratch reasoning in the output — only the final structured notes.
+
+10. LANGUAGE: All output in clean, professional English regardless of spoken language in the video.
+
+11. OUTPUT FORMAT: Return ONLY valid JSON matching this schema, no markdown fences, no preamble:
+{{
+  "title": "string",
+  "summary": "string",
+  "key_concepts": [{{"term": "string", "definition": "string"}}],
+  "bullet_points": ["string", ...],
+  "flashcards": [{{"question": "string", "answer": "string"}}]
+}}
 
 INPUT VIDEO CONTENT:
 {transcript}
@@ -553,9 +619,15 @@ def build_notes_chain(llm=None, instructions: str = ""):
     if llm is None:
         llm = llm_model()
 
+    # Escape braces so user text can't inject PromptTemplate variables
+    safe_instructions = (
+        instructions.strip().replace("{", "{{").replace("}", "}}")
+        if instructions and instructions.strip()
+        else ""
+    )
     extra = (
-        f"\nSPECIAL USER INSTRUCTIONS: {instructions.strip()}\n"
-        if instructions and instructions.strip() else ""
+        f"\nSPECIAL USER INSTRUCTIONS: {safe_instructions}\n"
+        if safe_instructions else ""
     )
     prompt = PromptTemplate(
         input_variables=["transcript"],
@@ -632,10 +704,29 @@ def generate_pdfs_node(state: NotesState) -> NotesState:
     if state.get("error"):
         return state
     try:
-        pdf_paths = generate_all_pdfs(state["notes"])
+        from visual_context import temporary_keyframes
+
+        url = state.get("url") or ""
+        with temporary_keyframes(url) as frames:
+            # Annotate with timestamp captions for the PDF grid
+            keyed = [
+                {
+                    "timestamp": f["timestamp"],
+                    "path": f["path"],
+                    "caption": f"t = {int(f['timestamp']) // 60:02d}:{int(f['timestamp']) % 60:02d}",
+                }
+                for f in frames
+            ]
+            print(f"[PDF] Embedding {len(keyed)} video keyframes into PDFs")
+            pdf_paths = generate_all_pdfs(state["notes"], keyframes=keyed)
         return {**state, "pdf_paths": pdf_paths, "error": None}
     except Exception as e:
-        return {**state, "pdf_paths": {}, "error": f"PDF error: {e}"}
+        # Fallback: notes PDF without frames if extraction blows up mid-flight
+        try:
+            pdf_paths = generate_all_pdfs(state["notes"])
+            return {**state, "pdf_paths": pdf_paths, "error": None}
+        except Exception as e2:
+            return {**state, "pdf_paths": {}, "error": f"PDF error: {e2} (frames: {e})"}
 
 
 # ──────────────────────────────────────────────
