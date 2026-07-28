@@ -684,6 +684,118 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
     return None
 
 
+# ── Strategy 5: Direct InnerTube API (most reliable) ───────────────────────────
+def _fetch_via_direct_innertube_api(video_id: str) -> tuple[Optional[str], str, str]:
+    """
+    Direct call to YouTube's internal InnerTube API - bypasses all bot detection.
+    This is what the YouTube website itself uses.
+    """
+    _rate_limiter.wait_if_needed()
+    
+    print(f"[Transcript] Strategy 5 (Direct InnerTube): Starting for {video_id}")
+    
+    session = _build_youtube_session()
+    title = uploader = ""
+    
+    # Step 1: Get video metadata and API key from page
+    try:
+        watch_url = f"https://www.youtube.com/watch?v={video_id}"
+        resp = session.get(watch_url, timeout=20)
+        resp.raise_for_status()
+        
+        title, uploader = _parse_page_metadata(resp.text)
+        
+        # Extract API key
+        api_key_match = re.search(r'"INNERTUBE_API_KEY":"([^"]+)"', resp.text)
+        if not api_key_match:
+            print("[Transcript] Strategy 5: No API key found in page")
+            return None, title, uploader
+        
+        api_key = api_key_match.group(1)
+        
+        # Extract client version
+        client_version = "2.20240126.01.00"
+        version_match = re.search(r'"clientVersion":"([^"]+)"', resp.text)
+        if version_match:
+            client_version = version_match.group(1)
+        
+        print(f"[Transcript] Strategy 5: Got API key, client version: {client_version}")
+        
+    except Exception as e:
+        print(f"[Transcript] Strategy 5: Page fetch failed: {e}")
+        return None, "", ""
+    
+    # Step 2: Call InnerTube player API
+    try:
+        innertube_url = f"https://www.youtube.com/youtubei/v1/player?key={api_key}"
+        
+        payload = {
+            "videoId": video_id,
+            "context": {
+                "client": {
+                    "clientName": "WEB",
+                    "clientVersion": client_version,
+                    "hl": "en",
+                    "gl": "US",
+                }
+            }
+        }
+        
+        headers = {
+            "Content-Type": "application/json",
+            "X-YouTube-Client-Name": "1",
+            "X-YouTube-Client-Version": client_version,
+            "Origin": "https://www.youtube.com",
+            "Referer": f"https://www.youtube.com/watch?v={video_id}",
+        }
+        headers.update(session.headers)
+        
+        player_resp = session.post(innertube_url, json=payload, headers=headers, timeout=15)
+        player_resp.raise_for_status()
+        player_data = player_resp.json()
+        
+        # Extract captions
+        captions = player_data.get("captions", {}).get("playerCaptionsTracklistRenderer", {})
+        caption_tracks = captions.get("captionTracks", [])
+        
+        if not caption_tracks:
+            print("[Transcript] Strategy 5: No caption tracks in player response")
+            return None, title, uploader
+        
+        # Find English captions
+        chosen = None
+        for lang in ["en", "en-US", "en-GB", "hi", "hi-IN"]:
+            chosen = next((t for t in caption_tracks if t.get("languageCode") == lang), None)
+            if chosen:
+                break
+        
+        if not chosen:
+            chosen = caption_tracks[0]
+        
+        caption_url = chosen.get("baseUrl")
+        if not caption_url:
+            print("[Transcript] Strategy 5: No baseUrl in caption track")
+            return None, title, uploader
+        
+        # Fetch captions
+        if "fmt=" not in caption_url:
+            caption_url += "&fmt=json3"
+        
+        cap_resp = session.get(caption_url, timeout=15)
+        cap_resp.raise_for_status()
+        
+        text = _parse_json3_captions(cap_resp.text)
+        if text:
+            lang = chosen.get("languageCode", "?")
+            print(f"[Transcript] Strategy 5 (InnerTube) SUCCESS: {len(text)} chars, lang={lang}")
+            return text, title, uploader
+        
+    except Exception as e:
+        print(f"[Transcript] Strategy 5 (InnerTube): API call failed: {e}")
+    
+    return None, title, uploader
+
+
 # ──────────────────────────────────────────────
 # 4.  Main Transcript Tool
 # ──────────────────────────────────────────────
@@ -699,9 +811,25 @@ def fetch_transcript_tool(url: str) -> str:
     
     title = uploader = description = ""
 
+    # ── Strategy 0: Direct InnerTube API (MOST RELIABLE - try first!) ──────────
+    try:
+        text, title, uploader = _fetch_via_direct_innertube_api(video_id)
+        if text:
+            title_header = (
+                f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
+                if title else f"VIDEO ID: {video_id}\n"
+            )
+            return f"{title_header}\nTRANSCRIPT:\n{text}"
+    except Exception as e:
+        print(f"[Transcript] Strategy 0 (InnerTube) completely failed: {e}")
+
     # ── Strategy 1: pytubefix (PO token generator & client rotation) ────────────
     try:
-        text, title, uploader, description = _fetch_via_pytubefix(video_id)
+        text, pt_title, pt_uploader, description = _fetch_via_pytubefix(video_id)
+        if pt_title and not title:
+            title = pt_title
+        if pt_uploader and not uploader:
+            uploader = pt_uploader
         title_header = (
             f"VIDEO TITLE: {title}\nSPEAKER / CHANNEL: {uploader}\n"
             if title else f"VIDEO ID: {video_id}\n"
