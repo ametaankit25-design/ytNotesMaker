@@ -485,104 +485,103 @@ def _fetch_via_ytdlp(video_id: str) -> Optional[str]:
                 continue
         return None
 
-    try:
-        for attempt, clients in enumerate(rotations, start=1):
-            # Add delay between attempts to avoid rate limiting
-            if attempt > 1:
-                time.sleep(3)
-            
-            tmp = tempfile.mkdtemp(prefix="ytnm_subs_")
+    for attempt, clients in enumerate(rotations, start=1):
+        # Add delay between attempts to avoid rate limiting
+        if attempt > 1:
+            time.sleep(3)
+        
+        tmp = tempfile.mkdtemp(prefix="ytnm_subs_")
+        try:
+            ydl_opts = {
+                "skip_download": True,
+                "writesubtitles": True,
+                "writeautomaticsub": True,
+                # Only English — wildcards like en.* trigger mass downloads → HTTP 429
+                "subtitleslangs": ["en"],
+                "subtitlesformat": "vtt",
+                "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
+                "quiet": True,
+                "no_warnings": True,
+                "socket_timeout": 30,  # Increased timeout
+                "retries": 3,  # Increased retries
+                "ignoreerrors": True,
+                "ignore_no_formats_error": True,
+                "extractor_args": {"youtube": {"player_client": clients}},
+                "http_headers": {
+                    "User-Agent": (
+                        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                        "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+                    ),
+                    "Accept-Language": "en-US,en;q=0.9",
+                },
+            }
+            if cookies_path:
+                ydl_opts["cookiefile"] = cookies_path
+
+            info = None
             try:
-                ydl_opts = {
-                    "skip_download": True,
-                    "writesubtitles": True,
-                    "writeautomaticsub": True,
-                    # Only English — wildcards like en.* trigger mass downloads → HTTP 429
-                    "subtitleslangs": ["en"],
-                    "subtitlesformat": "vtt",
-                    "outtmpl": os.path.join(tmp, "%(id)s.%(ext)s"),
-                    "quiet": True,
-                    "no_warnings": True,
-                    "socket_timeout": 30,  # Increased timeout
-                    "retries": 3,  # Increased retries
-                    "ignoreerrors": True,
-                    "ignore_no_formats_error": True,
-                    "extractor_args": {"youtube": {"player_client": clients}},
-                    "http_headers": {
-                        "User-Agent": (
-                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                            "(KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
-                        ),
-                        "Accept-Language": "en-US,en;q=0.9",
-                    },
-                }
-                if cookies_path:
-                    ydl_opts["cookiefile"] = cookies_path
-
-                info = None
-                try:
-                    with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                        info = ydl.extract_info(url, download=True)
-                except Exception as e:
-                    # Subtitle files may already be on disk before a later language fails
-                    print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) warning: {e}")
-                    # If this looks like a cookie issue, force refresh for next attempt
-                    if "cookies" in str(e).lower() or "login" in str(e).lower():
-                        _cookie_manager.force_refresh()
-
-                text = _read_sub_files(tmp)
-                if text:
-                    print(
-                        f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
-                        f"({clients}) via file: {len(text)} chars"
-                    )
-                    return text
-
-                if info:
-                    all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
-                    if all_subs:
-                        chosen_lang = next(
-                            (l for l in ["en", "en-US", "en-GB", "hi"] if l in all_subs),
-                            list(all_subs.keys())[0],
-                        )
-                        formats = all_subs[chosen_lang]
-                        sub_url = next(
-                            (f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1", "srv3"]),
-                            None,
-                        )
-                        if not sub_url and formats:
-                            sub_url = formats[0].get("url")
-                        if sub_url:
-                            session = _build_youtube_session()
-                            cap_resp = session.get(sub_url, timeout=15)
-                            cap_resp.raise_for_status()
-                            text = _parse_json3_captions(cap_resp.text)
-                            if text:
-                                print(
-                                    f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
-                                    f"({clients}) via URL: {len(text)} chars"
-                                )
-                                return text
-
-                print(
-                    f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}): "
-                    f"No subtitles (files in tmp: {os.listdir(tmp)})"
-                )
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
             except Exception as e:
-                err = str(e)
-                print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) failed: {err}")
-                if "bot" in err.lower() or "sign in" in err.lower():
-                    print("[Transcript] Hint: export browser cookies to cookies.txt (see DEPLOYMENT.md for EC2)")
-                    # Force cookie refresh on bot detection
+                # Subtitle files may already be on disk before a later language fails
+                print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) warning: {e}")
+                # If this looks like a cookie issue, force refresh for next attempt
+                if "cookies" in str(e).lower() or "login" in str(e).lower():
                     _cookie_manager.force_refresh()
-            finally:
-                shutil.rmtree(tmp, ignore_errors=True)
-                # Clean up temp cookies if we created them
-                if temp_cookies_path and os.path.exists(temp_cookies_path):
-                    try:
-                        os.unlink(temp_cookies_path)
-                    except Exception:
-                        pass
+
+            text = _read_sub_files(tmp)
+            if text:
+                print(
+                    f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
+                    f"({clients}) via file: {len(text)} chars"
+                )
+                return text
+
+            if info:
+                all_subs = {**(info.get("subtitles") or {}), **(info.get("automatic_captions") or {})}
+                if all_subs:
+                    chosen_lang = next(
+                        (l for l in ["en", "en-US", "en-GB", "hi"] if l in all_subs),
+                        list(all_subs.keys())[0],
+                    )
+                    formats = all_subs[chosen_lang]
+                    sub_url = next(
+                        (f.get("url") for f in formats if f.get("ext") in ["json3", "vtt", "srv1", "srv3"]),
+                        None,
+                    )
+                    if not sub_url and formats:
+                        sub_url = formats[0].get("url")
+                    if sub_url:
+                        session = _build_youtube_session()
+                        cap_resp = session.get(sub_url, timeout=15)
+                        cap_resp.raise_for_status()
+                        text = _parse_json3_captions(cap_resp.text)
+                        if text:
+                            print(
+                                f"[Transcript] Strategy 4 (yt-dlp) SUCCESS on attempt {attempt} "
+                                f"({clients}) via URL: {len(text)} chars"
+                            )
+                            return text
+
+            print(
+                f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}): "
+                f"No subtitles (files in tmp: {os.listdir(tmp)})"
+            )
+        except Exception as e:
+            err = str(e)
+            print(f"[Transcript] Strategy 4 (yt-dlp) attempt {attempt} ({clients}) failed: {err}")
+            if "bot" in err.lower() or "sign in" in err.lower():
+                print("[Transcript] Hint: export browser cookies to cookies.txt (see DEPLOYMENT.md for EC2)")
+                # Force cookie refresh on bot detection
+                _cookie_manager.force_refresh()
+        finally:
+            shutil.rmtree(tmp, ignore_errors=True)
+            # Clean up temp cookies if we created them
+            if temp_cookies_path and os.path.exists(temp_cookies_path):
+                try:
+                    os.unlink(temp_cookies_path)
+                except Exception:
+                    pass
     return None
 
 
