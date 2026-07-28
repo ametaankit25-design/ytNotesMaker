@@ -23,6 +23,12 @@ CORS(app)
 _pdf_store: dict[str, dict] = {}
 
 
+# Vercel serverless handler
+def handler(request):
+    """Vercel serverless function handler"""
+    return app(request.environ, lambda *args: None)
+
+
 @app.errorhandler(Exception)
 def handle_global_exception(e):
     """Ensure all backend errors return clean JSON, never raw HTML tracebacks."""
