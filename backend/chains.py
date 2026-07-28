@@ -689,13 +689,18 @@ def _fetch_via_direct_innertube_api(video_id: str) -> tuple[Optional[str], str, 
     """
     Direct call to YouTube's internal InnerTube API - bypasses all bot detection.
     This is what the YouTube website itself uses.
+    Uses cookies if available for better success rate.
     """
     _rate_limiter.wait_if_needed()
     
     print(f"[Transcript] Strategy 5 (Direct InnerTube): Starting for {video_id}")
     
-    session = _build_youtube_session()
+    session = _build_youtube_session()  # This already loads cookies via cookie manager
     title = uploader = ""
+    
+    # Check if we have cookies loaded
+    cookies_loaded = len(session.cookies) > 0
+    print(f"[Transcript] Strategy 5: Cookies loaded: {cookies_loaded} ({len(session.cookies)} cookies)")
     
     # Step 1: Get video metadata and API key from page
     try:
@@ -725,10 +730,11 @@ def _fetch_via_direct_innertube_api(video_id: str) -> tuple[Optional[str], str, 
         print(f"[Transcript] Strategy 5: Page fetch failed: {e}")
         return None, "", ""
     
-    # Step 2: Call InnerTube player API
+    # Step 2: Call InnerTube player API with proper authentication
     try:
         innertube_url = f"https://www.youtube.com/youtubei/v1/player?key={api_key}"
         
+        # Enhanced payload with proper client config
         payload = {
             "videoId": video_id,
             "context": {
@@ -737,14 +743,18 @@ def _fetch_via_direct_innertube_api(video_id: str) -> tuple[Optional[str], str, 
                     "clientVersion": client_version,
                     "hl": "en",
                     "gl": "US",
+                    "userAgent": session.headers.get("User-Agent", ""),
                 }
-            }
+            },
+            "contentCheckOk": True,
+            "racyCheckOk": True,
         }
         
         headers = {
             "Content-Type": "application/json",
             "X-YouTube-Client-Name": "1",
             "X-YouTube-Client-Version": client_version,
+            "X-Origin": "https://www.youtube.com",
             "Origin": "https://www.youtube.com",
             "Referer": f"https://www.youtube.com/watch?v={video_id}",
         }
@@ -787,11 +797,13 @@ def _fetch_via_direct_innertube_api(video_id: str) -> tuple[Optional[str], str, 
         text = _parse_json3_captions(cap_resp.text)
         if text:
             lang = chosen.get("languageCode", "?")
-            print(f"[Transcript] Strategy 5 (InnerTube) SUCCESS: {len(text)} chars, lang={lang}")
+            print(f"[Transcript] Strategy 5 (InnerTube) SUCCESS: {len(text)} chars, lang={lang}, cookies={cookies_loaded}")
             return text, title, uploader
         
     except Exception as e:
         print(f"[Transcript] Strategy 5 (InnerTube): API call failed: {e}")
+        import traceback
+        traceback.print_exc()
     
     return None, title, uploader
 
